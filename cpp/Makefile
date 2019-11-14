@@ -3,7 +3,7 @@ LIBPATH=../../../
 
 BDBMPCIEINCLUDE= -I$(LIBPATH)/cpp/
 BDBMPCIECPP= $(LIBPATH)/cpp/bdbmpcie.cpp $(LIBPATH)/cpp/ShmFifo.cpp $(LIBPATH)/cpp/DRAMHostDMA.cpp
-LIB= -lrt
+LIB= -lrt -lpthread
 
 
 all:
@@ -14,3 +14,4 @@ bsim:
 	echo "building for bluesim"
 	mkdir -p obj
 	g++ main.cpp $(BDBMPCIECPP) $(BDBMPCIEINCLUDE) -o obj/bsim $(LIB) -DBLUESIM -g -pedantic
+	g++ get_diff.cpp -o get_diff

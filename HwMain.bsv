@@ -37,51 +37,54 @@ module mkHwMain#(PcieUserIfc pcie)
     ZfpIfc zfp <- mkZfp;
     DZfpIfc dzfp <- mkDecompZfp;
 
-    FIFO#(Bit#(32)) next <- mkFIFO;
+    FIFO#(Bit#(32)) send_pcieQ <- mkFIFO;
     FIFO#(Bit#(32)) inputQ <- mkFIFO;
     Reg#(Bit#(64)) inputBuf <- mkReg(0);
     FIFO#(Bit#(64)) mergeInputQ <- mkFIFO;
     Vector#(4,Reg#(Bit#(64))) zfpInput <- replicateM(mkReg(0));
-    Reg#(Bit#(2)) sendCycle <- mkReg(0);
-    Vector#(4,Reg#(Bit#(64))) sendBuff <- replicateM(mkReg(0));
 
     /* TODO */
-    rule toSend;
-        Bit#(2) cycle = sendCycle;
-        Vector#(4,Bit#(64)) ibuf = replicate(0);
-        for (Bit#(4) i=0;i<4;i=i+1) begin
-            ibuf[i] = sendBuff[i];
+    Vector#(4,Reg#(Bit#(64))) sendBuff <- replicateM(mkReg(0));
+    Reg#(Bit#(3)) dzfpCycle <- mkReg(0);
+    rule get_dzfp;
+        Vector#(4,Bit#(64)) d = replicate(0);
+        for (Bit#(4)i=0;i<4;i=i+1) begin
+            d[i] = sendBuff[i];
         end
-
-        if (cycle == 0) begin
-            ibuf <- dzfp.get;
+        if (dzfpCycle == 0) begin
+            d <- dzfp.get;
         end
-        next.enq(truncate(ibuf[cycle]));
-
-        for (Bit#(4) i=0;i<4;i=i+1) begin
-            sendBuff[i] <= ibuf[i];
+        case (dzfpCycle)
+            0:send_pcieQ.enq(d[0][31:0]);
+            1:send_pcieQ.enq(d[0][63:32]);
+            2:send_pcieQ.enq(d[1][31:0]);
+            3:send_pcieQ.enq(d[1][63:32]);
+            4:send_pcieQ.enq(d[2][31:0]);
+            5:send_pcieQ.enq(d[2][63:32]);
+            6:send_pcieQ.enq(d[3][31:0]);
+            7:send_pcieQ.enq(d[3][63:32]);
+        endcase
+        for (Bit#(4)i=0;i<4;i=i+1) begin
+            sendBuff[i] <= d[i];
         end
-
-        sendCycle <= sendCycle + 1;
+        dzfpCycle <= dzfpCycle + 1;
     endrule
 
-    rule echoRead;
+    rule sendToHost;
         // read request handle must be returned with pcie.dataSend
         let r <- pcie.dataReq;
         let a = r.addr;
-
-        next.deq;
-        let compressed = next.first;
-
+        send_pcieQ.deq;
+        let decompressed = send_pcieQ.first;
+        $display("goto pcie");
         // PCIe IO is done at 4 byte granularities
         // lower 2 bits are always zero
         let offset = (a>>2);
         if ( offset == 0 ) begin
-            pcie.dataSend(r, compressed);
+            pcie.dataSend(r, decompressed);
         end else if ( offset == 1 ) begin
-            pcie.dataSend(r, compressed);
+            pcie.dataSend(r, decompressed);
         end else begin
-            //pcie.dataSend(r, pcie.debug_data);
             pcie.dataSend(r, writeCounter);
         end
     endrule
@@ -143,7 +146,7 @@ module mkHwMain#(PcieUserIfc pcie)
     rule sendToDecomp;
         Bit#(8) b_off = comp_buf_off;
         Bit#(256) b_buf = comp_buf;
-        if (b_off < 128) begin
+        if (b_off < 48) begin
             Bit#(128) compressed <- zfp.get;
             Bit#(256) t_buf = zeroExtend(compressed);
             t_buf = t_buf << b_off;
@@ -151,7 +154,8 @@ module mkHwMain#(PcieUserIfc pcie)
             b_off = b_off + 128;
             tset <= True;
         end
-        if (tset && b_off > 47) begin
+        /* else if (tset && b_off > 47) begin */
+        else if (tset) begin
             dzfp.put(truncate(comp_buf));
             b_buf = b_buf >> 48;
             b_off = b_off - 48;

@@ -82,7 +82,8 @@ module mkDecompZfp (DZfpIfc);
     FIFO#(Vector#(3,Bit#(48))) toGather_All <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toConvertBit <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_1 <- mkFIFO;
-    FIFO#(Vector#(4,Bit#(64))) outputQ <- mkFIFO;
+    /* FIFO#(Vector#(4,Bit#(64))) outputQ <- mkSizedFIFO(300000); */
+    FIFO#(Vector#(4,Bit#(64))) outputQ <- mkSizedFIFO(5);
     FIFO#(Vector#(4,Bit#(64))) toUnblock_2 <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_3 <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_4 <- mkFIFO;

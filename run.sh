@@ -11,6 +11,7 @@ then
 else
 	./sw | tee res.txt
 fi
-sleep 10
+sleep 3
+./cpp/get_diff > result.txt
 kill -9 $BDBM_BSIM_PID
 rm /dev/shm/bdbm$BDBM_BSIM_PID
