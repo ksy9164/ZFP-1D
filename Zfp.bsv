@@ -118,8 +118,6 @@ module mkZfp (ZfpIfc);
     Vector#(8,FIFO#(Bit#(1))) budgetMask <- replicateM(mkSizedFIFO(20));
     FIFO#(Bit#(8)) toSend_amount <- mkSizedFIFO(20);
 
-    //--------------------
-
     Reg#(Bit#(2)) mergeCycle <- mkReg(0);
 
     ByteShiftIfc#(Bit#(256),7) pipeShiftL <- mkPipelineLeftShifter();
@@ -139,6 +137,7 @@ module mkZfp (ZfpIfc);
         Vector#(4, Bit#(11)) matrixExp = replicate(0);
         for (Integer i = 0; i < 4; i = i+1) begin
             matrixExp[i] = truncateLSB(in[i]<<1);
+            $display("origin is %b ",in[i]);
         end
         expMax = get_max(matrixExp[0],matrixExp[1],matrixExp[2],matrixExp[3]);
 
@@ -286,6 +285,7 @@ module mkZfp (ZfpIfc);
         Vector#(4, Bit#(64)) in = toConvertBits.first;
         for (Bit#(5)i = 0; i < 4; i = i + 1) begin
             in[i] = int_to_uint(in[i]);
+            /* $display("before %b ",in[i]); */
         end
         toShuffle.enq(in);
     endrule
@@ -392,7 +392,7 @@ module mkZfp (ZfpIfc);
     Reg#(Bit#(32)) inputCnt <- mkReg(0);
 
     /* Exp data & 1st element of input */
-    rule outGroup_1 (mergeCycle == 0);
+    rule outGroup_1 (mergeCycle == 0); // triger to 4K
         toOut_Group_1.deq;
         encodingExp.deq;
         encodeBudgetQ.deq;

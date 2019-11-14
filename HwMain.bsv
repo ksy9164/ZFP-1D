@@ -43,45 +43,48 @@ module mkHwMain#(PcieUserIfc pcie)
     FIFO#(Bit#(64)) mergeInputQ <- mkFIFO;
     Vector#(4,Reg#(Bit#(64))) zfpInput <- replicateM(mkReg(0));
     Reg#(Bit#(2)) sendCycle <- mkReg(0);
-    Reg#(Bit#(128)) sendBuff <- mkReg(0);
-    FIFOF#(Vector#(4, Bit#(64))) toZfp <- mkSizedBRAMFIFOF(126000);
-
+    Vector#(4,Reg#(Bit#(64))) sendBuff <- replicateM(mkReg(0));
 
     /* TODO */
-/*     rule toSend;
- *         Bit#(2) cycle = sendCycle;
- *         Bit#(32) temp = 0;
- *         Bit#(128) ibuf = sendBuff;
- *
- *         if (cycle == 0) begin
- *             ibuf <- dzfp.get;
- *         end
- *         next.enq(truncate(ibuf));
- *
- *         sendBuff <= ibuf >> 32;
- *         sendCycle <= sendCycle + 1;
- *     endrule
- *
- *     rule echoRead;
- *         // read request handle must be returned with pcie.dataSend
- *         let r <- pcie.dataReq;
- *         let a = r.addr;
- *
- *         next.deq;
- *         let compressed = next.first;
- *
- *         // PCIe IO is done at 4 byte granularities
- *         // lower 2 bits are always zero
- *         let offset = (a>>2);
- *         if ( offset == 0 ) begin
- *             pcie.dataSend(r, compressed);
- *         end else if ( offset == 1 ) begin
- *             pcie.dataSend(r, compressed);
- *         end else begin
- *             //pcie.dataSend(r, pcie.debug_data);
- *             pcie.dataSend(r, writeCounter);
- *         end
- *     endrule */
+    rule toSend;
+        Bit#(2) cycle = sendCycle;
+        Vector#(4,Bit#(64)) ibuf = replicate(0);
+        for (Bit#(4) i=0;i<4;i=i+1) begin
+            ibuf[i] = sendBuff[i];
+        end
+
+        if (cycle == 0) begin
+            ibuf <- dzfp.get;
+        end
+        next.enq(truncate(ibuf[cycle]));
+
+        for (Bit#(4) i=0;i<4;i=i+1) begin
+            sendBuff[i] <= ibuf[i];
+        end
+
+        sendCycle <= sendCycle + 1;
+    endrule
+
+    rule echoRead;
+        // read request handle must be returned with pcie.dataSend
+        let r <- pcie.dataReq;
+        let a = r.addr;
+
+        next.deq;
+        let compressed = next.first;
+
+        // PCIe IO is done at 4 byte granularities
+        // lower 2 bits are always zero
+        let offset = (a>>2);
+        if ( offset == 0 ) begin
+            pcie.dataSend(r, compressed);
+        end else if ( offset == 1 ) begin
+            pcie.dataSend(r, compressed);
+        end else begin
+            //pcie.dataSend(r, pcie.debug_data);
+            pcie.dataSend(r, writeCounter);
+        end
+    endrule
 
     rule getDataFromHost;
         let w <- pcie.dataReceive;
@@ -101,9 +104,6 @@ module mkHwMain#(PcieUserIfc pcie)
         end
     endrule
 
-    Reg#(Bit#(64)) inputCnt <- mkReg(0);
-    Reg#(Bit#(64)) zfpCnt <- mkReg(0);
-
     rule matrixInputCtl;
         inputQ.deq;
         Bit#(64) ibuf = 0;
@@ -117,7 +117,7 @@ module mkHwMain#(PcieUserIfc pcie)
         inputCycle <= inputCycle + 1;
     endrule
 
-    rule merge_Input_256Bits(inputCnt < 125010);
+    rule merge_Input_256Bits;
         mergeInputQ.deq;
         Vector#(4, Bit#(64)) d;
         for (Bit#(4) i = 0; i < 4 ; i = i +1) begin
@@ -129,102 +129,51 @@ module mkHwMain#(PcieUserIfc pcie)
         mergeCycle <= mergeCycle + 1;
 
         if (mergeCycle == 3) begin
-            toZfp.enq(d);
-            inputCnt <= inputCnt + 1;
+            zfp.put(d);
         end
         for (Bit#(4) i = 0; i < 4 ; i = i +1) begin
             zfpInput[i] <= d[i];
         end
     endrule
-    Reg#(Bool) inputTrigger <- mkReg(False);
-
-    rule inputTriggerOn(inputCnt > 125000);
-        inputTrigger <= True;
-    endrule
-
-    rule cnttZfp(inputTrigger);
-        zfpCnt <= zfpCnt + 1;
-    endrule
-
-    rule queueingZfp(inputTrigger);
-        zfp.put(toZfp.first);
-        $display("clock is %d ",zfpCnt);
-        toZfp.deq;
-    endrule
-
     /* Decompress part */
     Reg#(Bit#(8)) comp_buf_off <- mkReg(0);
     Reg#(Bit#(256)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
-    Reg#(Bool) final_set <- mkReg(False);
-    Reg#(Bit#(64)) dzfpCnt <- mkReg(0);
 
-    rule get_zfp;
-        Bit#(128) data <- zfp.get;
-        dzfpCnt <= dzfpCnt + 1;
-        $display("dzfpCnt is %d ",dzfpCnt);
-    endrule
-
-    /* rule sendToDecomp(!final_set);
-     *     Bit#(8) b_off = comp_buf_off;
-     *     Bit#(256) b_buf = comp_buf;
-     *     if (b_off < 19) begin
-     *         Bit#(128) compressed <- zfp.get;
-     *         dzfpCnt <= dzfpCnt + 1;
-     *         $display("dzfpCnt is %d ",dzfpCnt);
-     *         Bit#(256) t_buf = zeroExtend(compressed);
-     *         t_buf = t_buf << b_off;
-     *         b_buf = b_buf | t_buf;
-     *         b_off = b_off + 128;
-     *         tset <= True;
-     *     end
-     *     if (tset && b_off > 18) begin
-     *         dzfp.put(truncate(comp_buf));
-     *         b_buf = b_buf >> 19;
-     *         b_off = b_off - 19;
-     *     end
-     *     comp_buf <= b_buf;
-     *     comp_buf_off <= b_off;
-     * endrule */
-
-    Reg#(Bit#(128)) dzfp_d <- mkReg(0);
-
-    rule dzfpGet;
-        Bit#(128) d  <- dzfp.get;
-        dzfp_d <= d;
-    endrule
-
-    rule finalOutput(!final_set && comp_buf_off < 19);
-        Bit#(128) compressed <- zfp.get_last_data;
-        Bit#(8) off <- zfp.get_last_off;
+    rule sendToDecomp;
         Bit#(8) b_off = comp_buf_off;
         Bit#(256) b_buf = comp_buf;
-        Bit#(256) t_buf = zeroExtend(compressed);
-
-        t_buf = t_buf << b_off;
-        b_buf = b_buf | t_buf;
-        b_off = b_off + off;
-
-        comp_buf <= b_buf;
-        comp_buf_off <= b_off;
-        final_set <= True;
-    endrule
-
-    rule final_queueing (final_set  && comp_buf_off > 0);
-        Bit#(256) b_buf = comp_buf;
-        Bit#(8) b_off = comp_buf_off;
-
-        $display("last Q is %b ", comp_buf);
-        dzfp.put(truncate(comp_buf));
-        b_buf = b_buf >> 19;
-
-        if (b_off > 19) begin
-            b_off = b_off - 19;
-        end else begin
-            b_off = 0;
+        if (b_off < 128) begin
+            Bit#(128) compressed <- zfp.get;
+            Bit#(256) t_buf = zeroExtend(compressed);
+            t_buf = t_buf << b_off;
+            b_buf = b_buf | t_buf;
+            b_off = b_off + 128;
+            tset <= True;
         end
-
-        comp_buf_off <= b_off;
+        if (tset && b_off > 47) begin
+            dzfp.put(truncate(comp_buf));
+            b_buf = b_buf >> 48;
+            b_off = b_off - 48;
+        end
         comp_buf <= b_buf;
+        comp_buf_off <= b_off;
     endrule
+
+/*     Vector#(4,Reg#(Bit#(64))) dzfp_d <- replicateM(mkReg(0));
+ *
+ *
+ *     rule dzfpGet;
+ *         let d  <- dzfp.get;
+ *         for (Bit#(4)i=0;i<4;i=i+1) begin
+ *             dzfp_d[i] <= d[i];
+ *         end
+ *     endrule */
+
+    rule finalOutput;
+        let in = zfp.get_last_data;
+        let off = zfp.get_last_off;
+        $display("last is %b ",in);
+    endrule
+
 endmodule
