@@ -17,7 +17,7 @@ int main(void)
     fread(result,sizeof(double),SIZE * 4,res);
     int cnt = 0;
 
-    for (int i = 0;  i < SIZE * 4 - 40; ++i) {
+    for (int i = 0;  i < SIZE * 4; ++i) {
         double diff;
         if (origin[i] > result[i]) {
             diff = origin[i] - result[i];
@@ -25,7 +25,7 @@ int main(void)
             diff = result[i] - origin[i];
         }
 
-        if (diff > 0.1) {
+        if (diff > 0.001) {
             cnt++;
             printf("no!! origin %lf decomp %lf diff %lf \n",origin[i],result[i],diff);
         } else {

@@ -7,6 +7,7 @@ import Vector::*;
 interface DZfpIfc;
     method Action put(Bit#(48) data);
     method Action put_noiseMargin(Int#(7) data);
+    method Action put_matrix_cnt(Bit#(32) cnt);
     method ActionValue#(Vector#(4,Bit#(64))) get;
 endinterface
 function Bit#(96)catBuf(Bit#(96)in_buf, Bit#(48)d, Bit#(7)in_bufoff);
@@ -73,7 +74,7 @@ endfunction
 (* synthesize *)
 module mkDecompZfp (DZfpIfc);
     /* rule to rule FIFO */
-    FIFO#(Bit#(11)) expQ <- mkSizedFIFO(50);
+    FIFO#(Bit#(11)) expQ <- mkSizedFIFO(20);
     FIFO#(Bit#(48)) inputQ <- mkSizedFIFO(20);
     FIFO#(Bit#(11)) toGroupA_E <- mkSizedFIFO(20);
     FIFO#(Bit#(48)) toGroupA_D <- mkSizedFIFO(20);
@@ -102,8 +103,12 @@ module mkDecompZfp (DZfpIfc);
     Reg#(Bit#(2)) inputCycle <- mkReg(0);
     Reg#(Bit#(7)) inputBufOff <- mkReg(0);
     Reg#(Bit#(96)) inputBuf <- mkReg(0);
+    Reg#(Bit#(32)) inputCnt <- mkReg(0);
+    Reg#(Bit#(16)) chunkAmount <- mkReg(0);
+    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(0);
+    Reg#(Bool) flushTrigger <- mkReg(False);
 
-    rule getGroup1_E(inputCycle == 0);
+    rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
         Bit#(7)in_bufoff = inputBufOff;
         Bit#(96)in_buf = inputBuf;
         if (in_bufoff < 48) begin
@@ -120,10 +125,12 @@ module mkDecompZfp (DZfpIfc);
         Int#(11) margin = signExtend(noiseMargin);
         Bit#(6) budget = truncate(pack(exp_max + margin));
         Bit#(6) bud_num = 0;
+        Bool trigger = flushTrigger;
         
         if (budget == 0) begin
             encodeBudget <= 0;
             encodeBudgetQ.enq(0);
+            inputCnt <= inputCnt + 1;
             bud_num = 0;
         end else begin
             bud_num = (budget - 1) / 6 + 1;
@@ -135,13 +142,27 @@ module mkDecompZfp (DZfpIfc);
                 encodeBudgetQ.enq(8);
             end
         end
+
+        if (chunkAmount > 48000 - 512) begin
+            trigger = True;
+        end
+
+        chunkAmount <= chunkAmount + 11;
         if (bud_num != 0) begin
             inputCycle <= 1;
-        end
+        end else if (trigger) begin
+            inputCycle <= 3;
+        end 
+
+        flushTrigger <= trigger;
+        $display("chunk  1 is %d ",chunkAmount);
         toGroupA_E.enq(e);
         inputBuf <= in_buf;
         inputBufOff <= in_bufoff;
     endrule
+
+    FIFO#(Bit#(6)) toShiftA_s_Q <- mkFIFO;
+    FIFO#(Bit#(48)) toShiftA_d_Q <- mkFIFO;
 
     rule getGroup1_D (inputCycle == 1);
         Bit#(7)in_bufoff = inputBufOff;
@@ -153,15 +174,28 @@ module mkDecompZfp (DZfpIfc);
             in_bufoff = in_bufoff + 48;
         end
         Bit#(48) data_a = get_a(in_buf);
+        $display("chunk 2 is %d ",chunkAmount);
         Bit#(6) shift = zeroExtend(encodeBudget) * 6;
+        chunkAmount <= chunkAmount + zeroExtend(shift);
         in_buf = in_buf >> shift;
         in_bufoff = in_bufoff - zeroExtend(shift);
-        data_a = data_a << (48 - shift);
-        toGroupA_D.enq(data_a);
+
+        toShiftA_d_Q.enq(data_a);
+        toShiftA_s_Q.enq(shift);
 
         inputBuf <= in_buf;
         inputBufOff <= in_bufoff;
         inputCycle <= 2;
+    endrule
+
+    rule shiftA;
+        toShiftA_s_Q.deq;
+        toShiftA_d_Q.deq;
+        Bit#(6) shift = toShiftA_s_Q.first;
+        Bit#(48) data = toShiftA_d_Q.first;
+
+        data = data << (48 - shift);
+        toGroupA_D.enq(data);
     endrule
 
     rule getGroup2 (inputCycle == 2);
@@ -178,45 +212,81 @@ module mkDecompZfp (DZfpIfc);
         Bit#(4) bud_cnt = budget_cnt;
         Bit#(18) data = 0;
         Bit#(2) header = 0;
+        Bit#(16) amount  = 0;
 
         if (bud_cnt < encodingLv) begin
             header = truncate(in_buf);
             in_buf = in_buf >> 2;
             in_bufoff = in_bufoff - 2;
+            amount = 2;
         end else begin
             header = 3;
         end
+        $display("chunk 3 is %d ",chunkAmount);
 
         data = truncate(in_buf);
         case (header)
-            0 : data = 0;
+            0 : begin
+                data = 0;
+            end
             1 : begin
                 data = zeroExtend(data[5:0]);
                 in_buf = in_buf >> 6;
                 in_bufoff = in_bufoff - 6;
+                amount = amount + 6;
             end
             2 : begin
                 data = zeroExtend(data[11:0]);
                 in_buf = in_buf >> 12;
                 in_bufoff = in_bufoff - 12;
+                amount = amount + 12;
             end
             3 : begin
                 in_buf = in_buf >> 18;
                 in_bufoff = in_bufoff - 18;
+                amount = amount + 18;
             end
         endcase
         bud_cnt = bud_cnt + 1;
 
         if (bud_cnt == encodeBudget) begin
-            inputCycle <= 0;
             budget_cnt <= 0;
+            inputCnt <= inputCnt + 1;
+            if (flushTrigger) begin
+                inputCycle <= 3;
+            end else begin
+                inputCycle <= 0;
+            end
         end else begin
             budget_cnt <= bud_cnt;
         end
 
+        chunkAmount <= amount + chunkAmount;
         toGather_B.enq(data);
         inputBuf <= in_buf;
         inputBufOff <= in_bufoff;
+    endrule
+
+    rule flush6K (inputCycle == 3);
+        Bit#(16) amount = chunkAmount;
+        inputQ.deq;
+        $display("@@@%d %b",amount,inputQ.first);
+        if (inputBufOff != 0) begin
+            chunkAmount <= chunkAmount + zeroExtend(inputBufOff) + 48;
+            inputBufOff <= 0;
+        end else if (amount + 48 == 48000) begin
+            inputCycle <= 0;
+            flushTrigger <= False;
+            inputBufOff <= 0;
+            chunkAmount <= 0;
+        end else begin
+            chunkAmount <= chunkAmount + 48;
+        end
+    endrule
+
+    rule last_in_ctl(inputCycle == 0 && inputCnt == totalMatrixCnt && totalMatrixCnt != 0);
+        inputCycle <= 3;
+        inputCnt <= 0;
     endrule
 
     Vector#(3,Reg#(Bit#(48))) data_groupB <- replicateM(mkReg(0));
@@ -410,7 +480,7 @@ module mkDecompZfp (DZfpIfc);
             d[i] = d[i] << (msb[i] + 1 +2);
             decomp[i][51:0] = d[i][63:12];
             decomp[i][63] = sign[i];
-            $display("uncomp is %b ",decomp[i]);
+            /* $display("uncomp is %b ",decomp[i]); */
         end
         outputQ.enq(decomp);
     endrule
@@ -424,5 +494,8 @@ module mkDecompZfp (DZfpIfc);
     endmethod
     method Action put_noiseMargin(Int#(7) data);
         noiseMargin <= data;
+    endmethod
+    method Action put_matrix_cnt(Bit#(32) cnt);
+        totalMatrixCnt <= cnt;
     endmethod
 endmodule

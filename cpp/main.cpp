@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         pcie->userWriteWord(12, originMatrix[i]);
     }
 
-    for (int i = 0;  i < matrixNumber * 2 * 4 - 40; ++i) {
+    for (int i = 0;  i < matrixNumber * 2 * 4; ++i) {
         uint32_t getd = pcie->userReadWord(0);
         decompMatrix[i] = getd;
     }

@@ -7,10 +7,7 @@ interface ZfpIfc;
     method Action put(Vector#(4, Bit#(64)) data);
     method Action put_noiseMargin(Int#(7) size);
     method Action put_matrix_cnt(Bit#(32) cnt);
-    method ActionValue#(Bit#(128)) get_last_data;
-    method ActionValue#(Bit#(8)) get_last_off;
     method ActionValue#(Bit#(128)) get;
-    method ActionValue#(Bool) check_empty;
 endinterface
 
 function Bit#(64) uint_to_int(Bit#(64) t);
@@ -70,18 +67,13 @@ endfunction
 module mkZfp (ZfpIfc);
     /* Rule to Rule FIFO */
     FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
-    FIFOF#(Bit#(128)) outputQ <- mkSizedFIFOF(50);
-    FIFO#(Bit#(128)) lastOutput_data <- mkFIFO;
-    FIFO#(Bit#(8)) lastOutput_off <- mkFIFO;
+    FIFOF#(Bit#(128)) outputQ <- mkSizedFIFOF(20);
 
     Reg#(Int#(7)) noiseMargin <- mkReg(0);
     FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
 
     /* Encoding Size, Cnt */
     Reg#(Bit#(32)) totalMatrixCnt <- mkReg(100);
-
-    /* Encode Map */
-    FIFO#(Bit#(128)) lastQ <- mkSizedFIFO(5);
 
     // new
     FIFO#(Bit#(11)) sendMaximumExp <- mkSizedFIFO(5);
@@ -100,7 +92,6 @@ module mkZfp (ZfpIfc);
     FIFO#(Vector#(4, Bit#(64))) toLift_4 <- mkFIFO;
     FIFO#(Vector#(4, Bit#(64))) toConvertBits <- mkFIFO;
     FIFO#(Vector#(4, Bit#(64))) toShuffle <- mkFIFO;
-    Reg#(Bit#(4)) encodingLv <- mkReg(4);
     Vector#(8,FIFO#(Bit#(18))) toMakeHeader <- replicateM(mkFIFO);
     
     Vector#(8,FIFO#(Bit#(20))) toMerge_1_d <- replicateM(mkFIFO);
@@ -111,6 +102,11 @@ module mkZfp (ZfpIfc);
 
     FIFOF#(Bit#(4)) encodeBudgetQ <- mkSizedFIFOF(16);
     FIFO#(Bit#(48)) toOut_Group_1 <- mkSizedFIFO(11);
+
+    FIFO#(Bit#(4)) toOut_Group_1_bud <- mkSizedFIFO(5);
+    FIFO#(Bit#(7)) toOut_Group_1_amount <- mkSizedFIFO(5);
+    FIFO#(Bit#(256)) toOut_Group_1_d <- mkSizedFIFO(5);
+
     FIFO#(Bit#(80)) toOut_Group_2_d <-mkFIFO;
     FIFO#(Bit#(7)) toOut_Group_2_a <- mkFIFO;
     FIFO#(Bit#(80)) toOut_Group_3_d <- mkFIFO;
@@ -137,7 +133,6 @@ module mkZfp (ZfpIfc);
         Vector#(4, Bit#(11)) matrixExp = replicate(0);
         for (Integer i = 0; i < 4; i = i+1) begin
             matrixExp[i] = truncateLSB(in[i]<<1);
-            $display("origin is %b ",in[i]);
         end
         expMax = get_max(matrixExp[0],matrixExp[1],matrixExp[2],matrixExp[3]);
 
@@ -173,16 +168,14 @@ module mkZfp (ZfpIfc);
         Int#(11) exp_max = unpack(toCalEncodeBudget.first) + 1023;
         Int#(11) margin = signExtend(noiseMargin);
         Bit#(6) budget = truncate(pack(exp_max + margin));
+        Bit#(6) bud_num = (budget - 1) / 6 + 1;
         if (budget == 0) begin
             encodeBudgetQ.enq(0);
+            bud_num = 0;
             for (Bit#(6)i=0; i<8; i = i+1) begin
                 budgetMask[i].enq(0);
             end
         end else begin
-            Bit#(6) bud_num = (budget - 1) / 6 + 1;
-            if (budget == 0) begin
-                bud_num = 0;
-            end
             if (bud_num < 9) begin
                 encodeBudgetQ.enq(truncate(bud_num));
             end else begin
@@ -311,6 +304,7 @@ module mkZfp (ZfpIfc);
             let in = toMakeHeader[i].first;
             let mask = budgetMask[i].first;
 
+            Bit#(4) encodingLv = 4;
             Bit#(2) header = get_header(in);
             Bit#(5) amount = get_amount(header);
             Bit#(20) merged = 0;
@@ -390,9 +384,11 @@ module mkZfp (ZfpIfc);
     Reg#(Bit#(4)) currentBudget <- mkReg(0);
     Reg#(Bit#(8)) pipeShifter_off <- mkReg(0);
     Reg#(Bit#(32)) inputCnt <- mkReg(0);
+    Reg#(Bit#(16)) chunkAmount <- mkReg(0);
+    Reg#(Bool) flushTrigger <- mkReg(False);
+    Reg#(Bit#(5)) last_out_trigger <- mkReg(30);
 
-    /* Exp data & 1st element of input */
-    rule outGroup_1 (mergeCycle == 0); // triger to 4K
+    rule preOutGroup1;
         toOut_Group_1.deq;
         encodingExp.deq;
         encodeBudgetQ.deq;
@@ -405,6 +401,24 @@ module mkZfp (ZfpIfc);
         Bit#(256) merged = zeroExtend(d);
         merged = merged << 11;
         merged = merged | zeroExtend(e);
+
+        toOut_Group_1_bud.enq(bud);
+        toOut_Group_1_amount.enq(a);
+        toOut_Group_1_d.enq(merged);
+    endrule
+
+(* descending_urgency = "out_Group_1, out_Group_2, out_Group_3, flush6K, send, wait_for_last, finalSend_and_reset" *)
+    /* Exp data & 1st element of input */
+    rule out_Group_1 (mergeCycle == 0); // triger to 4K
+        toOut_Group_1_amount.deq;
+        toOut_Group_1_d.deq;
+        toOut_Group_1_bud.deq;
+
+        Bit#(7) a = toOut_Group_1_amount.first;
+        Bit#(256) merged = toOut_Group_1_d.first;
+        Bit#(4) bud = toOut_Group_1_bud.first;
+        Bool trigger = flushTrigger;
+
         currentBudget <= bud;
         pipeShiftL.rotateBitBy(merged, truncate(pipeShifter_off));
 
@@ -413,13 +427,23 @@ module mkZfp (ZfpIfc);
         else
             pipeShifter_off <= pipeShifter_off + zeroExtend(a);
 
+        if (chunkAmount > 48000 - 512) begin
+            trigger = True;
+        end
+
         if (bud == 0) begin
-            mergeCycle <= 0;
             inputCnt <= inputCnt + 1;
+            if (trigger) begin
+                mergeCycle <= 3;
+            end else begin
+                mergeCycle <= 0;
+            end
         end else begin
             mergeCycle <= 1;
         end
 
+        chunkAmount <= chunkAmount + zeroExtend(a);
+        flushTrigger <= trigger;
         toSend_amount.enq(zeroExtend(a));
     endrule
 
@@ -438,9 +462,15 @@ module mkZfp (ZfpIfc);
         if (currentBudget > 4) begin
             mergeCycle <= 2;
         end else begin
-            mergeCycle <= 0;
             inputCnt <= inputCnt + 1;
+            if (flushTrigger) begin
+                mergeCycle <= 3;
+            end else begin
+                mergeCycle <= 0;
+            end
         end
+
+        chunkAmount <= chunkAmount + zeroExtend(a);
         toSend_amount.enq(zeroExtend(a));
     endrule
 
@@ -457,11 +487,46 @@ module mkZfp (ZfpIfc);
             pipeShifter_off <= pipeShifter_off + zeroExtend(a);
 
         toSend_amount.enq(zeroExtend(a));
-        mergeCycle <= 0;
+
+        chunkAmount <= chunkAmount + zeroExtend(a);
+        if (flushTrigger) begin
+            mergeCycle <= 3;
+        end else begin
+            mergeCycle <= 0;
+        end
         inputCnt <= inputCnt + 1;
     endrule
 
-    rule send ;
+    rule flush6K (mergeCycle == 3);
+        Bit#(16) amount = chunkAmount;
+        Bit#(8) a = 0;
+        Bool last = False;
+        if (48000 - amount > 127) begin
+            a = 128; 
+        end else begin
+            a = truncate(48000 - amount);
+            last = True;
+        end
+
+        pipeShiftL.rotateBitBy(0, truncate(pipeShifter_off));
+        if (pipeShifter_off + zeroExtend(a) >= 128)
+            pipeShifter_off <= pipeShifter_off + a - 128;
+        else
+            pipeShifter_off <= pipeShifter_off +a;
+
+        toSend_amount.enq(a);
+
+        if (last) begin
+            chunkAmount <= 0;
+            mergeCycle <= 0;
+            flushTrigger <= False;
+            $display("this last is %d ",pipeShifter_off + a);
+        end else begin
+            chunkAmount <= amount + 128;
+        end
+    endrule
+
+    rule send;
         Bit#(256) d = send_buffer;
         Bit#(256) t <- pipeShiftL.getVal;
         d = d | t;
@@ -476,22 +541,18 @@ module mkZfp (ZfpIfc);
         send_buffer <= d;
     endrule
 
-    Reg#(Bit#(5)) last_out_trigger <- mkReg(30);
-    Reg#(Bit#(1)) executed <- mkReg(0);
-
     rule wait_for_last(totalMatrixCnt == inputCnt && last_out_trigger != 0);
         last_out_trigger <= last_out_trigger - 1;
     endrule
 
-    rule finalSend (last_out_trigger == 0 && executed == 0);
+    rule finalSend_and_reset (last_out_trigger == 0);
         if (!outputQ.notEmpty) begin
-            Bit#(256) d = send_buffer;
-            Bit#(8) off = send_buffer_off;
-            lastOutput_data.enq(truncate(d));
-            lastOutput_off.enq(off);
-            executed <= 1;
+            inputCnt <= 0;
+            mergeCycle <= 3;
+            last_out_trigger <= 30;
         end
     endrule
+
 
     /* Get input from Top.bsv */
     method Action put(Vector#(4, Bit#(64)) data);
@@ -509,24 +570,7 @@ module mkZfp (ZfpIfc);
     /* Send Output to Top.bsv */
     method ActionValue#(Bit#(128)) get;
         outputQ.deq;
-        /* $display("%b",outputQ.first); */
+        $display("%b",outputQ.first);
         return outputQ.first;
-    endmethod
-
-    method ActionValue#(Bit#(8)) get_last_off;
-        lastOutput_off.deq;
-        /* $display("off is %d ",lastOutput_off.first); */
-        return lastOutput_off.first;
-    endmethod
-
-    method ActionValue#(Bool) check_empty;
-        Bool check = outputQ.notEmpty;
-        return check;
-    endmethod
-
-    method ActionValue#(Bit#(128)) get_last_data;
-        lastOutput_data.deq;
-        /* $display("just last is %b ",lastOutput_data.first); */
-        return lastOutput_data.first;
     endmethod
 endmodule

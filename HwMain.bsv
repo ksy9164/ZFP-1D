@@ -100,6 +100,7 @@ module mkHwMain#(PcieUserIfc pcie)
             dzfp.put_noiseMargin(truncate(unpack(d)));
         end else if ( off == 1 ) begin
             zfp.put_matrix_cnt(d);
+            dzfp.put_matrix_cnt(d);
         end else if (off == 3) begin
             inputQ.enq(d);
         end else begin
@@ -142,6 +143,12 @@ module mkHwMain#(PcieUserIfc pcie)
     Reg#(Bit#(8)) comp_buf_off <- mkReg(0);
     Reg#(Bit#(256)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
+/*     Reg#(Bit#(128)) go <- mkReg(0);
+ *
+ *     rule dddd;
+ *         let d <- zfp.get;
+ *         go <= d;
+ *     endrule */
 
     rule sendToDecomp;
         Bit#(8) b_off = comp_buf_off;
@@ -153,9 +160,7 @@ module mkHwMain#(PcieUserIfc pcie)
             b_buf = b_buf | t_buf;
             b_off = b_off + 128;
             tset <= True;
-        end
-        /* else if (tset && b_off > 47) begin */
-        else if (tset) begin
+        end else if (tset) begin
             dzfp.put(truncate(comp_buf));
             b_buf = b_buf >> 48;
             b_off = b_off - 48;
@@ -173,11 +178,5 @@ module mkHwMain#(PcieUserIfc pcie)
  *             dzfp_d[i] <= d[i];
  *         end
  *     endrule */
-
-    rule finalOutput;
-        let in = zfp.get_last_data;
-        let off = zfp.get_last_off;
-        $display("last is %b ",in);
-    endrule
 
 endmodule
