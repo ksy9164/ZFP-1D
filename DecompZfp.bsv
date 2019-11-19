@@ -143,7 +143,7 @@ module mkDecompZfp (DZfpIfc);
             end
         end
 
-        if (chunkAmount > 48000 - 512) begin
+        if (chunkAmount > 49152 - 512) begin
             trigger = True;
         end
 
@@ -274,7 +274,7 @@ module mkDecompZfp (DZfpIfc);
         if (inputBufOff != 0) begin
             chunkAmount <= chunkAmount + zeroExtend(inputBufOff) + 48;
             inputBufOff <= 0;
-        end else if (amount + 48 == 48000) begin
+        end else if (amount + 48 == 49152) begin
             inputCycle <= 0;
             flushTrigger <= False;
             inputBufOff <= 0;

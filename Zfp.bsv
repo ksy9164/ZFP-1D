@@ -427,7 +427,7 @@ module mkZfp (ZfpIfc);
         else
             pipeShifter_off <= pipeShifter_off + zeroExtend(a);
 
-        if (chunkAmount > 48000 - 512) begin
+        if (chunkAmount > 49152 - 512) begin
             trigger = True;
         end
 
@@ -501,10 +501,10 @@ module mkZfp (ZfpIfc);
         Bit#(16) amount = chunkAmount;
         Bit#(8) a = 0;
         Bool last = False;
-        if (48000 - amount > 127) begin
+        if (49152 - amount > 127) begin
             a = 128; 
         end else begin
-            a = truncate(48000 - amount);
+            a = truncate(49152 - amount);
             last = True;
         end
 
