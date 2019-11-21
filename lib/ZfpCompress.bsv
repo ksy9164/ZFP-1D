@@ -3,11 +3,12 @@ import FIFOF::*;
 import Vector::*;
 import Shifter::*;
 
-interface ZfpIfc;
+interface ZfpCompressIfc;
     method Action put(Vector#(4, Bit#(64)) data);
     method Action put_noiseMargin(Int#(7) size);
     method Action put_matrix_cnt(Bit#(32) cnt);
     method ActionValue#(Bit#(128)) get;
+    method ActionValue#(Bit#(32)) get_6k_idx;
 endinterface
 
 function Bit#(64) uint_to_int(Bit#(64) t);
@@ -64,7 +65,7 @@ function Bit#(5) get_amount(Bit#(2) h);
 endfunction
 
 (* synthesize *)
-module mkZfp (ZfpIfc);
+module mkZfpCompress (ZfpCompressIfc);
     /* Rule to Rule FIFO */
     FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
     FIFOF#(Bit#(128)) outputQ <- mkSizedFIFOF(20);
@@ -78,6 +79,7 @@ module mkZfp (ZfpIfc);
     // new
     FIFO#(Bit#(11)) sendMaximumExp <- mkSizedFIFO(5);
     FIFO#(Bit#(11)) maximumExp <- mkSizedFIFO(5);
+    FIFO#(Bit#(32)) matrix_6k_idxQ <- mkSizedFIFO(5);
     FIFO#(Bit#(11)) encodingExp <- mkSizedFIFO(31);
 
     FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
@@ -515,6 +517,8 @@ module mkZfp (ZfpIfc);
             pipeShifter_off <= pipeShifter_off +a;
 
         toSend_amount.enq(a);
+        Bit#(32) idx_6k = inputCnt;
+        matrix_6k_idxQ.enq(idx_6k);
 
         if (last) begin
             chunkAmount <= 0;
@@ -572,5 +576,10 @@ module mkZfp (ZfpIfc);
         outputQ.deq;
         $display("%b",outputQ.first);
         return outputQ.first;
+    endmethod
+
+    method ActionValue#(Bit#(32)) get_6k_idx;
+        matrix_6k_idxQ.deq;
+        return matrix_6k_idxQ.first;
     endmethod
 endmodule

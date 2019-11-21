@@ -4,7 +4,7 @@ import FIFOF::*;
 import Vector::*;
 
 
-interface DZfpIfc;
+interface ZfpDecompressIfc;
     method Action put(Bit#(48) data);
     method Action put_noiseMargin(Int#(7) data);
     method Action put_matrix_cnt(Bit#(32) cnt);
@@ -72,7 +72,7 @@ function Bit#(5) get_msb (Bit#(16) d);
     return 15 - msb;
 endfunction
 (* synthesize *)
-module mkDecompZfp (DZfpIfc);
+module mkZfpDecompress (ZfpDecompressIfc);
     /* rule to rule FIFO */
     FIFO#(Bit#(11)) expQ <- mkSizedFIFO(20);
     FIFO#(Bit#(48)) inputQ <- mkSizedFIFO(20);

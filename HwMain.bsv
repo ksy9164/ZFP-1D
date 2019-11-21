@@ -10,8 +10,9 @@ import PcieCtrl::*;
 
 import DMASplitter::*;
 
+import ZfpCompress::*;
+import ZfpDecompress::*;
 import Zfp::*;
-import DecompZfp::*;
 
 interface HwMainIfc;
 endinterface
@@ -34,8 +35,9 @@ module mkHwMain#(PcieUserIfc pcie)
 
     FIFO#(Bit#(64)) inputBramBuf <- mkSizedBRAMFIFO(1024); 
 
-    ZfpIfc zfp <- mkZfp;
-    DZfpIfc dzfp <- mkDecompZfp;
+    ZfpCompressIfc zfp <- mkZfpCompress;
+    ZfpDecompressIfc dzfp <- mkZfpDecompress;
+    ZfpIfc d_zfp <- mkZfp;
 
     FIFO#(Bit#(32)) send_pcieQ <- mkFIFO;
     FIFO#(Bit#(32)) inputQ <- mkFIFO;
@@ -143,12 +145,6 @@ module mkHwMain#(PcieUserIfc pcie)
     Reg#(Bit#(8)) comp_buf_off <- mkReg(0);
     Reg#(Bit#(256)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
-/*     Reg#(Bit#(128)) go <- mkReg(0);
- *
- *     rule dddd;
- *         let d <- zfp.get;
- *         go <= d;
- *     endrule */
 
     rule sendToDecomp;
         Bit#(8) b_off = comp_buf_off;
@@ -168,15 +164,5 @@ module mkHwMain#(PcieUserIfc pcie)
         comp_buf <= b_buf;
         comp_buf_off <= b_off;
     endrule
-
-/*     Vector#(4,Reg#(Bit#(64))) dzfp_d <- replicateM(mkReg(0));
- *
- *
- *     rule dzfpGet;
- *         let d  <- dzfp.get;
- *         for (Bit#(4)i=0;i<4;i=i+1) begin
- *             dzfp_d[i] <= d[i];
- *         end
- *     endrule */
 
 endmodule
