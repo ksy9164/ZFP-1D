@@ -44,6 +44,7 @@ Clock sys_clk_200mhz <- mkClockIBUFDS(defaultValue, sys_clk_p, sys_clk_n);
 Clock sys_clk_200mhz_buf <- mkClockBUFG(clocked_by sys_clk_200mhz);
 Reset rst200 <- mkAsyncReset( 4, pcie_rst_n, sys_clk_200mhz_buf);
 
+/* PcieCtrlIfc pcieCtrl <- mkPcieCtrl(pcie.user, clocked_by sys_clk_200mhz_buf, reset_by rst200); */
 PcieCtrlIfc pcieCtrl <- mkPcieCtrl(pcie.user, clocked_by pcie.user_clk, reset_by pcie.user_reset);
     /*
     ClockGenerator7Params clk_params = defaultValue();
@@ -61,6 +62,7 @@ PcieCtrlIfc pcieCtrl <- mkPcieCtrl(pcie.user, clocked_by pcie.user_clk, reset_by
     Reset rst125 <- mkAsyncReset( 4, sys_rst_n_buf, clk125);
     */
 HwMainIfc hwmain <- mkHwMain(pcieCtrl.user, clocked_by pcie.user_clk, reset_by pcie.user_reset);
+/* HwMainIfc hwmain <- mkHwMain(pcieCtrl.user, clocked_by sys_clk_200mhz_buf, reset_by rst200); */
 
     //ReadOnly#(Bit#(4)) leddata <- mkNullCrossingWire(noClock, pcieCtrl.leds);
 

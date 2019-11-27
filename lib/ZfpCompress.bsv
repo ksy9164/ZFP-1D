@@ -389,6 +389,7 @@ module mkZfpCompress (ZfpCompressIfc);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
     Reg#(Bool) flushTrigger <- mkReg(False);
     Reg#(Bit#(5)) last_out_trigger <- mkReg(30);
+    Reg#(Bit#(32)) chunk_idx_sum <- mkReg(0);
 
     rule preOutGroup1;
         toOut_Group_1.deq;
@@ -434,12 +435,14 @@ module mkZfpCompress (ZfpCompressIfc);
         end
 
         if (bud == 0) begin
-            inputCnt <= inputCnt + 1;
             if (trigger) begin
                 mergeCycle <= 3;
+                Bit#(32) idx_6k = inputCnt;
+                matrix_6k_idxQ.enq(idx_6k + 1);
             end else begin
                 mergeCycle <= 0;
             end
+            inputCnt <= inputCnt + 1;
         end else begin
             mergeCycle <= 1;
         end
@@ -464,12 +467,14 @@ module mkZfpCompress (ZfpCompressIfc);
         if (currentBudget > 4) begin
             mergeCycle <= 2;
         end else begin
-            inputCnt <= inputCnt + 1;
             if (flushTrigger) begin
                 mergeCycle <= 3;
+                Bit#(32) idx_6k = inputCnt;
+                matrix_6k_idxQ.enq(idx_6k + 1);
             end else begin
                 mergeCycle <= 0;
             end
+            inputCnt <= inputCnt + 1;
         end
 
         chunkAmount <= chunkAmount + zeroExtend(a);
@@ -493,6 +498,8 @@ module mkZfpCompress (ZfpCompressIfc);
         chunkAmount <= chunkAmount + zeroExtend(a);
         if (flushTrigger) begin
             mergeCycle <= 3;
+            Bit#(32) idx_6k = inputCnt;
+            matrix_6k_idxQ.enq(idx_6k + 1);
         end else begin
             mergeCycle <= 0;
         end
@@ -517,8 +524,6 @@ module mkZfpCompress (ZfpCompressIfc);
             pipeShifter_off <= pipeShifter_off +a;
 
         toSend_amount.enq(a);
-        Bit#(32) idx_6k = inputCnt;
-        matrix_6k_idxQ.enq(idx_6k);
 
         if (last) begin
             chunkAmount <= 0;
@@ -551,6 +556,8 @@ module mkZfpCompress (ZfpCompressIfc);
 
     rule finalSend_and_reset (last_out_trigger == 0);
         if (!outputQ.notEmpty) begin
+            Bit#(32) idx_6k = inputCnt;
+            matrix_6k_idxQ.enq(idx_6k);
             inputCnt <= 0;
             mergeCycle <= 3;
             last_out_trigger <= 30;
@@ -577,7 +584,6 @@ module mkZfpCompress (ZfpCompressIfc);
         $display("%b",outputQ.first);
         return outputQ.first;
     endmethod
-
     method ActionValue#(Bit#(32)) get_6k_idx;
         matrix_6k_idxQ.deq;
         return matrix_6k_idxQ.first;

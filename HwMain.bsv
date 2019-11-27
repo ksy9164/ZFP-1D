@@ -19,13 +19,6 @@ endinterface
 
 module mkHwMain#(PcieUserIfc pcie) 
     (HwMainIfc);
-
-    Clock curClk <- exposeCurrentClock;
-    Reset curRst <- exposeCurrentReset;
-
-    Clock pcieclk = pcie.user_clk;
-    Reset pcierst = pcie.user_rst;
-
     Reg#(Bit#(32)) dataBuffer0 <- mkReg(0);
     Reg#(Bit#(32)) dataBuffer1 <- mkReg(0);
     Reg#(Bit#(32)) writeCounter <- mkReg(0);
@@ -35,9 +28,7 @@ module mkHwMain#(PcieUserIfc pcie)
 
     FIFO#(Bit#(64)) inputBramBuf <- mkSizedBRAMFIFO(1024); 
 
-    ZfpCompressIfc zfp <- mkZfpCompress;
-    ZfpDecompressIfc dzfp <- mkZfpDecompress;
-    ZfpIfc d_zfp <- mkZfp;
+    ZfpIfc zfp <- mkZfp;
 
     FIFO#(Bit#(32)) send_pcieQ <- mkFIFO;
     FIFO#(Bit#(32)) inputQ <- mkFIFO;
@@ -48,13 +39,14 @@ module mkHwMain#(PcieUserIfc pcie)
     /* TODO */
     Vector#(4,Reg#(Bit#(64))) sendBuff <- replicateM(mkReg(0));
     Reg#(Bit#(3)) dzfpCycle <- mkReg(0);
+
     rule get_dzfp;
         Vector#(4,Bit#(64)) d = replicate(0);
         for (Bit#(4)i=0;i<4;i=i+1) begin
             d[i] = sendBuff[i];
         end
         if (dzfpCycle == 0) begin
-            d <- dzfp.get;
+            d <- zfp.get_decompressed;
         end
         case (dzfpCycle)
             0:send_pcieQ.enq(d[0][31:0]);
@@ -71,7 +63,6 @@ module mkHwMain#(PcieUserIfc pcie)
         end
         dzfpCycle <= dzfpCycle + 1;
     endrule
-
     rule sendToHost;
         // read request handle must be returned with pcie.dataSend
         let r <- pcie.dataReq;
@@ -99,10 +90,8 @@ module mkHwMain#(PcieUserIfc pcie)
         let off = (a>>2);
         if ( off == 0 ) begin
             zfp.put_noiseMargin(truncate(unpack(d)));
-            dzfp.put_noiseMargin(truncate(unpack(d)));
         end else if ( off == 1 ) begin
             zfp.put_matrix_cnt(d);
-            dzfp.put_matrix_cnt(d);
         end else if (off == 3) begin
             inputQ.enq(d);
         end else begin
@@ -135,34 +124,75 @@ module mkHwMain#(PcieUserIfc pcie)
         mergeCycle <= mergeCycle + 1;
 
         if (mergeCycle == 3) begin
-            zfp.put(d);
+            zfp.compress(d);
         end
         for (Bit#(4) i = 0; i < 4 ; i = i +1) begin
             zfpInput[i] <= d[i];
         end
     endrule
+
     /* Decompress part */
     Reg#(Bit#(8)) comp_buf_off <- mkReg(0);
     Reg#(Bit#(256)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
 
-    rule sendToDecomp;
-        Bit#(8) b_off = comp_buf_off;
-        Bit#(256) b_buf = comp_buf;
-        if (b_off < 48) begin
-            Bit#(128) compressed <- zfp.get;
-            Bit#(256) t_buf = zeroExtend(compressed);
-            t_buf = t_buf << b_off;
-            b_buf = b_buf | t_buf;
-            b_off = b_off + 128;
-            tset <= True;
-        end else if (tset) begin
-            dzfp.put(truncate(comp_buf));
-            b_buf = b_buf >> 48;
-            b_off = b_off - 48;
+    Vector#(4,FIFO#(Bit#(128))) getcompQ <- replicateM(mkSizedBRAMFIFO(10000));
+    /* FIFO#(Bit#(128)) getcompQ <- mkSizedFIFO(1000); */
+    Reg#(Bit#(16)) comp_cnt <- mkReg(0);
+    Reg#(Bit#(2)) comp_cycle <- mkReg(0);
+    Reg#(Bit#(1)) decomp_trigger <- mkReg(0);
+    
+    rule get_compressed;
+        Bit#(128) d <- zfp.host_get;
+        Bit#(2) cycle = comp_cycle;
+        if (comp_cnt + 1 == 384) begin
+            cycle = cycle + 1;
+            comp_cnt <= 0;
+            $display("cycle is changed ! %d -> %d ",cycle,cycle+1);
+        end else begin
+            comp_cnt <= comp_cnt + 1;
         end
-        comp_buf <= b_buf;
-        comp_buf_off <= b_off;
+        getcompQ[comp_cycle].enq(d);
+        comp_cycle <= cycle;
     endrule
 
+    /* rule get_compressed;
+     *     Bit#(128) d <- zfp.host_get;
+     *     getcompQ.enq(d);
+     * endrule */
+
+    rule get_6k_idx;
+        Bit#(32) data <- zfp.host_get_6k_idx;
+        $display("host put 6k idx");
+        zfp.host_put_6k_idx(data);
+    endrule
+    rule get_total_each_matrix_cnt;
+        Vector#(4,Bit#(32)) data <- zfp.host_get_total_cnt;
+        zfp.host_put_matrix_cnt(data);
+        decomp_trigger <= 1;
+    endrule
+    for (Bit#(4) i = 0; i < 4; i = i + 1) begin
+        rule send_to_decomp(decomp_trigger == 1);
+            case (i)
+                0 : begin
+                    getcompQ[i].deq;
+                    zfp.host_put_1(getcompQ[i].first);
+                end
+                1 : begin
+                    getcompQ[i].deq;
+                    zfp.host_put_2(getcompQ[i].first);
+                end
+                2 : begin
+                    getcompQ[i].deq;
+                    zfp.host_put_3(getcompQ[i].first);
+                end
+                3 : begin
+                    getcompQ[i].deq;
+                    zfp.host_put_4(getcompQ[i].first);
+                end
+            endcase
+            /* getcompQ.deq;
+             * zfp.host_put_1(getcompQ.first); */
+        endrule
+    end
 endmodule
