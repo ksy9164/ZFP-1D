@@ -26,8 +26,6 @@ module mkHwMain#(PcieUserIfc pcie)
     Reg#(Bit#(1)) inputCycle <- mkReg(0);
     Reg#(Bit#(2)) mergeCycle <- mkReg(0);
 
-    FIFO#(Bit#(64)) inputBramBuf <- mkSizedBRAMFIFO(1024); 
-
     ZfpIfc zfp <- mkZfp;
 
     FIFO#(Bit#(32)) send_pcieQ <- mkFIFO;
@@ -136,9 +134,11 @@ module mkHwMain#(PcieUserIfc pcie)
     Reg#(Bit#(256)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
 
-    Vector#(4,FIFO#(Bit#(128))) getcompQ <- replicateM(mkSizedBRAMFIFO(10000));
-    /* FIFO#(Bit#(128)) getcompQ <- mkSizedFIFO(1000); */
-    Reg#(Bit#(16)) comp_cnt <- mkReg(0);
+    Vector#(4,FIFO#(Bit#(128))) getcompQ_pre <- replicateM(mkFIFO);
+    Vector#(4,FIFO#(Bit#(128))) getcompQ <- replicateM(mkSizedBRAMFIFO(385));
+    Vector#(4,FIFO#(Bit#(128))) getcompQ_post <- replicateM(mkFIFO);
+
+    Reg#(Bit#(12)) comp_cnt <- mkReg(0);
     Reg#(Bit#(2)) comp_cycle <- mkReg(0);
     Reg#(Bit#(1)) decomp_trigger <- mkReg(0);
     
@@ -152,47 +152,49 @@ module mkHwMain#(PcieUserIfc pcie)
         end else begin
             comp_cnt <= comp_cnt + 1;
         end
-        getcompQ[comp_cycle].enq(d);
+        getcompQ_pre[comp_cycle].enq(d);
         comp_cycle <= cycle;
     endrule
 
-    /* rule get_compressed;
-     *     Bit#(128) d <- zfp.host_get;
-     *     getcompQ.enq(d);
-     * endrule */
+    for (Bit#(4) i = 0; i < 4; i = i + 1) begin
+        rule to_BRAM;
+            getcompQ_pre[i].deq;
+            getcompQ[i].enq(getcompQ_pre[i].first);
+        endrule
+    end
+
+    for (Bit#(4) i = 0; i < 4; i = i + 1) begin
+        rule to_out_BRAM;
+            getcompQ[i].deq;
+            getcompQ_post[i].enq(getcompQ[i].first);
+        endrule
+    end
 
     rule get_6k_idx;
         Bit#(32) data <- zfp.host_get_6k_idx;
-        $display("host put 6k idx");
         zfp.host_put_6k_idx(data);
     endrule
-    rule get_total_each_matrix_cnt;
-        Vector#(4,Bit#(32)) data <- zfp.host_get_total_cnt;
-        zfp.host_put_matrix_cnt(data);
-        decomp_trigger <= 1;
-    endrule
+
     for (Bit#(4) i = 0; i < 4; i = i + 1) begin
-        rule send_to_decomp(decomp_trigger == 1);
+        rule send_to_decomp;
             case (i)
                 0 : begin
-                    getcompQ[i].deq;
-                    zfp.host_put_1(getcompQ[i].first);
+                    getcompQ_post[i].deq;
+                    zfp.host_put_1(getcompQ_post[i].first);
                 end
                 1 : begin
-                    getcompQ[i].deq;
-                    zfp.host_put_2(getcompQ[i].first);
+                    getcompQ_post[i].deq;
+                    zfp.host_put_2(getcompQ_post[i].first);
                 end
                 2 : begin
-                    getcompQ[i].deq;
-                    zfp.host_put_3(getcompQ[i].first);
+                    getcompQ_post[i].deq;
+                    zfp.host_put_3(getcompQ_post[i].first);
                 end
                 3 : begin
-                    getcompQ[i].deq;
-                    zfp.host_put_4(getcompQ[i].first);
+                    getcompQ_post[i].deq;
+                    zfp.host_put_4(getcompQ_post[i].first);
                 end
             endcase
-            /* getcompQ.deq;
-             * zfp.host_put_1(getcompQ.first); */
         endrule
     end
 endmodule

@@ -14,7 +14,6 @@ method Action put_noiseMargin(Int#(7) size);
 method Action put_matrix_cnt(Bit#(32) cnt);
 method Action compress(Vector#(4, Bit#(64)) data);
 method ActionValue#(Bit#(128)) host_get;
-method ActionValue#(Vector#(4,Bit#(32))) host_get_total_cnt;
 method ActionValue#(Bit#(32)) host_get_6k_idx;
 
 method Action host_put_1(Bit#(128) data);
@@ -29,11 +28,10 @@ endinterface
 (* synthesize *)
 module mkZfp(ZfpIfc);
     /* interface Q */
-    Vector#(4,FIFO#(Bit#(128))) hostInputQ <- replicateM(mkSizedFIFO(11));
-    FIFO#(Bit#(128)) hostOutputQ <- mkSizedFIFO(11);
+    Vector#(4,FIFO#(Bit#(128))) hostInputQ <- replicateM(mkFIFO);
+    FIFO#(Bit#(128)) hostOutputQ <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) compressQ <- mkFIFO;
-    FIFO#(Vector#(4,Bit#(64))) decompressQ <- mkSizedFIFO(11);
-    FIFO#(Vector#(4,Bit#(32))) total_MatrixCntQ <- mkFIFO;
+    FIFO#(Vector#(4,Bit#(64))) decompressQ <- mkFIFO;
     FIFO#(Bit#(32)) host_6k_idxQ <- mkSizedFIFO(11);
 
     /* interface data */
@@ -57,39 +55,22 @@ module mkZfp(ZfpIfc);
     Vector#(4,Reg#(Bit#(32))) chunk_idx <- replicateM(mkReg(0));
     Reg#(Bit#(2)) idx_cycle <- mkReg(0);
     Reg#(Bit#(1)) idx_trigger <- mkReg(0);
-    FIFO#(Vector#(4,Bit#(32))) get_total_cntQ <- mkFIFO;
-    FIFO#(Bit#(32)) get_6k_idxQ <- mkSizedFIFO(31);
+    FIFO#(Bit#(32)) get_6k_idxQ <- mkSizedFIFO(5);
     Reg#(Bit#(32)) chunk_idx_sum <- mkReg(0);
     Reg#(Bit#(32)) chunk_sum_past <- mkReg(0);
 
-    rule get_6k_idx (idx_trigger == 0);
+    rule get_6k_idx;
         Bit#(32) sum <- compressM.get_6k_idx;
         Bit#(2) cycle = idx_cycle;
         Bit#(32) idx = sum - chunk_sum_past;
-
         chunk_sum_past <= sum;
-        chunk_idx[cycle] <= chunk_idx[cycle] + idx;
-
         get_6k_idxQ.enq(idx);
-        $display("idx is %d  total %d",idx,sum);
 
         if (sum == totalMatrixCnt) begin
             idx_cycle <= 0;
-            idx_trigger <= 1;
         end else begin
             idx_cycle <= idx_cycle + 1;
         end
-    endrule
-
-    rule send_total_matrix_cnt (idx_trigger == 1);
-        Vector#(4,Bit#(32)) data = replicate(0);
-        for (Bit#(4) i = 0; i < 4; i = i + 1) begin
-            data[i] = chunk_idx[i];
-            $display(" idx imp is %d ",data[i]);
-            chunk_idx[i] <= 0;
-        end
-        get_total_cntQ.enq(data);
-        idx_trigger <= 0;
     endrule
 
     rule getCompressedData;
@@ -98,20 +79,27 @@ module mkZfp(ZfpIfc);
     endrule
 
     /* get compressed data from host and put data to Decompress Moudles(4) */
-    Vector#(4,Reg#(Bit#(256))) decompBuf <- replicateM(mkReg(0));
+    Vector#(4,Reg#(Bit#(160))) decompBuf <- replicateM(mkReg(0));
     Vector#(4,Reg#(Bit#(8))) decompOff <- replicateM(mkReg(0));
-    Vector#(4,FIFO#(Bit#(48))) toDecompQ <- replicateM(mkSizedFIFO(30));
+    Vector#(4,FIFO#(Bit#(48))) toDecompQ <- replicateM(mkFIFO);
 
     /* Get data from host (128bits -> 48bits) */
     for (Bit#(4) i = 0; i < 4; i = i + 1) begin
         rule startDecompress;
-            Bit#(256) d_buff = decompBuf[i];
+            Bit#(160) d_buff = decompBuf[i];
             Bit#(8) d_off = decompOff[i];
             if (d_off < 48) begin
                 hostInputQ[i].deq;
-                Bit#(128) compressed =  hostInputQ[i].first;
-                Bit#(256) temp_buff = zeroExtend(compressed);
-                temp_buff = temp_buff << d_off;
+                Bit#(128) compressed = hostInputQ[i].first;
+                Bit#(160) temp_buff = zeroExtend(compressed);
+                case (d_off)
+                    16 : begin
+                        temp_buff = temp_buff << 16;
+                    end
+                    32 : begin
+                        temp_buff = temp_buff << 32;
+                    end
+                endcase
                 d_buff = d_buff | temp_buff;
                 d_off = d_off + 128;
             end else begin
@@ -133,36 +121,65 @@ module mkZfp(ZfpIfc);
         endrule
     end
 
-    /* put each 4 decompress module total matrix number */
-    rule put6K_idx;
-        total_MatrixCntQ.deq;
-        Vector#(4,Bit#(32)) idx = total_MatrixCntQ.first;
-        for (Bit#(4) i = 0; i < 4; i = i + 1) begin
-            decompressM[i].put_matrix_cnt(idx[i]);
-        end
-    endrule
 
     /* Put Decompressed data to BRAMFIFO Buffer */
+    Vector#(4,FIFO#(Vector#(4,Bit#(64)))) getDecompQ_pre <- replicateM(mkFIFO);
     Vector#(4,FIFO#(Vector#(4,Bit#(64)))) getDecompQ <- replicateM(mkSizedBRAMFIFO(1000));
+    Vector#(4,FIFO#(Vector#(4,Bit#(64)))) getDecompQ_post <- replicateM(mkFIFO);
+
     for (Bit#(4) i = 0; i < 4; i = i + 1) begin
-        rule putDecompressMoudle;
+        rule getDecompressMoudle;
             Vector#(4,Bit#(64)) in <- decompressM[i].get;
-            getDecompQ[i].enq(in);
+            getDecompQ_pre[i].enq(in);
         endrule
     end
+
+    for (Bit#(4) i = 0; i < 4; i = i + 1) begin
+        rule into_BRAM;
+            getDecompQ_pre[i].deq;
+            getDecompQ[i].enq(getDecompQ_pre[i].first);
+        endrule
+    end
+
+    for (Bit#(4) i = 0; i < 4; i = i + 1) begin
+        rule get_BRAM;
+            getDecompQ[i].deq;
+            getDecompQ_post[i].enq(getDecompQ[i].first);
+        endrule
+    end
+
+    FIFO#(Bit#(32)) matrixCntQ <- mkSizedFIFO(5);
+    FIFO#(Bit#(32)) matrixCnt_getQ <- mkSizedFIFO(5);
+
+    rule get_host6k;
+        host_6k_idxQ.deq;
+        Bit#(32) idx = host_6k_idxQ.first;
+        matrixCntQ.enq(idx);
+        matrixCnt_getQ.enq(idx);
+    endrule
+
+    Reg#(Bit#(2)) cntCycle <- mkReg(0);
+    /* put each 4 decompress module total matrix number */
+    rule put6K_idx;
+        matrixCntQ.deq;
+        Bit#(32) cnt = matrixCntQ.first;
+        Bit#(2) cycle = cntCycle;
+        decompressM[cycle].put_matrix_cnt(cnt);
+        cntCycle <= cntCycle + 1;
+    endrule
 
     /* send decompressed data */
     Reg#(Bit#(2)) send_decomp_cycle <- mkReg(0);
     Reg#(Bit#(32)) decomp_cnt <- mkReg(0);
     rule send_decompressed_data;
         Bit#(2) idx = send_decomp_cycle;
-        getDecompQ[idx].deq;
-        Vector#(4,Bit#(64)) data = getDecompQ[idx].first;
+        getDecompQ_post[idx].deq;
+        Vector#(4,Bit#(64)) data = getDecompQ_post[idx].first;
         Bit#(32) cnt = decomp_cnt + 1;
-        if (cnt == host_6k_idxQ.first) begin
+        if (cnt == matrixCnt_getQ.first) begin
             idx = idx + 1;
             cnt = 0;
-            host_6k_idxQ.deq;
+            matrixCnt_getQ.deq;
         end
         send_decomp_cycle <= idx;
         decomp_cnt <= cnt;
@@ -186,16 +203,9 @@ module mkZfp(ZfpIfc);
         hostOutputQ.deq;
         return hostOutputQ.first;
     endmethod
-    method ActionValue#(Vector#(4,Bit#(32))) host_get_total_cnt;
-        get_total_cntQ.deq;
-        return get_total_cntQ.first;
-    endmethod
     method ActionValue#(Bit#(32)) host_get_6k_idx;
         get_6k_idxQ.deq;
         return get_6k_idxQ.first;
-    endmethod
-    method Action host_put_matrix_cnt(Vector#(4,Bit#(32)) idx);
-        total_MatrixCntQ.enq(idx);
     endmethod
     method Action host_put_6k_idx(Bit#(32) idx);
         host_6k_idxQ.enq(idx);

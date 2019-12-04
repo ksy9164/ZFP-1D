@@ -16,6 +16,20 @@ function Bit#(96)catBuf(Bit#(96)in_buf, Bit#(48)d, Bit#(7)in_bufoff);
     in_buf = in_buf | t;
     return in_buf;
 endfunction
+function Bit#(96)catBuf_d(Bit#(96)in_buf, Bit#(48)d, Bit#(5)in_bufoff);
+    Bit#(96) t = zeroExtend(d);
+    t = t << in_bufoff;
+    in_buf = in_buf | t;
+    return in_buf;
+endfunction
+
+function Bit#(96)catBuf_e(Bit#(96)in_buf, Bit#(48)d, Bit#(4)in_bufoff);
+    Bit#(96) t = zeroExtend(d);
+    t = t << in_bufoff;
+    in_buf = in_buf | t;
+    return in_buf;
+endfunction
+
 function Bit#(11)getE(Bit#(96) ibuf);
     Bit#(11) e = 0;
     e = truncate(ibuf);
@@ -75,16 +89,20 @@ endfunction
 module mkZfpDecompress (ZfpDecompressIfc);
     /* rule to rule FIFO */
     FIFO#(Bit#(11)) expQ <- mkSizedFIFO(20);
-    FIFO#(Bit#(48)) inputQ <- mkSizedFIFO(20);
-    FIFO#(Bit#(11)) toGroupA_E <- mkSizedFIFO(20);
+    /* FIFO#(Bit#(48)) inputQ <- mkSizedFIFO(20); */
+    FIFO#(Bit#(48)) inputQ <- mkFIFO;
+    FIFO#(Bit#(11)) toGroupA_E <- mkSizedFIFO(13);
     FIFO#(Bit#(48)) toGroupA_D <- mkSizedFIFO(20);
-    FIFO#(Bit#(18)) toGather_B <- mkSizedFIFO(10);
+    FIFO#(Bit#(18)) toGather_B <- mkFIFO;
+    /* FIFO#(Bit#(11)) toGroupA_E <- mkFIFO;
+     * FIFO#(Bit#(48)) toGroupA_D <- mkFIFO;
+     * FIFO#(Bit#(18)) toGather_B <- mkFIFO; */
+
     FIFO#(Bit#(4)) encodeBudgetQ <- mkFIFO;
     FIFO#(Vector#(3,Bit#(48))) toGather_All <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toConvertBit <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_1 <- mkFIFO;
-    /* FIFO#(Vector#(4,Bit#(64))) outputQ <- mkSizedFIFO(300000); */
-    FIFO#(Vector#(4,Bit#(64))) outputQ <- mkSizedFIFO(5);
+    FIFO#(Vector#(4,Bit#(64))) outputQ <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_2 <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_3 <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toUnblock_4 <- mkFIFO;
@@ -107,17 +125,20 @@ module mkZfpDecompress (ZfpDecompressIfc);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
     Reg#(Bit#(32)) totalMatrixCnt <- mkReg(0);
     Reg#(Bool) flushTrigger <- mkReg(False);
+    FIFO#(Bit#(32)) totalCntQ <- mkSizedFIFO(5);
 
-    rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
+    rule getGroup1_E(inputCycle == 0 && totalMatrixCnt != inputCnt);
         Bit#(7)in_bufoff = inputBufOff;
         Bit#(96)in_buf = inputBuf;
-        if (in_bufoff < 48) begin
+        if (in_bufoff < 11) begin
             inputQ.deq;
             let d = inputQ.first;
-            in_buf = catBuf(in_buf,d,in_bufoff);
+            in_buf = catBuf_e(in_buf,d,truncate(in_bufoff));
             in_bufoff = in_bufoff + 48;
         end
-        Bit#(11) e = getE(in_buf);
+
+        Bit#(11) e = truncate(in_buf);
+        
         in_buf = in_buf >> 11;
         in_bufoff = in_bufoff - 11;
 
@@ -127,35 +148,28 @@ module mkZfpDecompress (ZfpDecompressIfc);
         Bit#(6) bud_num = 0;
         Bool trigger = flushTrigger;
         
-        if (budget == 0) begin
-            encodeBudget <= 0;
-            encodeBudgetQ.enq(0);
-            inputCnt <= inputCnt + 1;
-            bud_num = 0;
-        end else begin
-            bud_num = (budget - 1) / 6 + 1;
-            if (bud_num < 9) begin
-                encodeBudget <= truncate(bud_num);
-                encodeBudgetQ.enq(truncate(bud_num));
-            end else begin
-                encodeBudget <= 8;
-                encodeBudgetQ.enq(8);
-            end
-        end
-
         if (chunkAmount > 49152 - 512) begin
             trigger = True;
         end
 
-        chunkAmount <= chunkAmount + 11;
-        if (bud_num != 0) begin
+        if (budget == 0) begin
+            bud_num = 0;
+            inputCnt <= inputCnt + 1;
+            if (trigger) begin
+                inputCycle <= 3;
+            end 
+        end else begin
+            bud_num = (budget - 1) / 6 + 1;
+            if (bud_num >= 9) begin
+                bud_num = 8;
+            end
             inputCycle <= 1;
-        end else if (trigger) begin
-            inputCycle <= 3;
-        end 
+        end
+        encodeBudget <= truncate(bud_num);
+        encodeBudgetQ.enq(truncate(bud_num));
 
-        flushTrigger <= trigger;
-        $display("chunk  1 is %d ",chunkAmount);
+        chunkAmount <= chunkAmount + 11;
+
         toGroupA_E.enq(e);
         inputBuf <= in_buf;
         inputBufOff <= in_bufoff;
@@ -202,10 +216,10 @@ module mkZfpDecompress (ZfpDecompressIfc);
         Bit#(4) encodingLv = 4;
         Bit#(7) in_bufoff = inputBufOff;
         Bit#(96) in_buf = inputBuf;
-        if (in_bufoff < 48) begin
+        if (in_bufoff < 20) begin
             inputQ.deq;
             let input_d = inputQ.first;
-            in_buf = catBuf(in_buf,input_d,in_bufoff);
+            in_buf = catBuf_d(in_buf,input_d,truncate(in_bufoff));
             in_bufoff = in_bufoff + 48;
         end
 
@@ -287,6 +301,7 @@ module mkZfpDecompress (ZfpDecompressIfc);
     rule last_in_ctl(inputCycle == 0 && inputCnt == totalMatrixCnt && totalMatrixCnt != 0);
         inputCycle <= 3;
         inputCnt <= 0;
+        totalMatrixCnt <= 0;
     endrule
 
     Vector#(3,Reg#(Bit#(48))) data_groupB <- replicateM(mkReg(0));
@@ -480,9 +495,13 @@ module mkZfpDecompress (ZfpDecompressIfc);
             d[i] = d[i] << (msb[i] + 1 +2);
             decomp[i][51:0] = d[i][63:12];
             decomp[i][63] = sign[i];
-            /* $display("uncomp is %b ",decomp[i]); */
         end
         outputQ.enq(decomp);
+    endrule
+
+    rule total_cnt_get (totalMatrixCnt == 0);
+        totalCntQ.deq;
+        totalMatrixCnt <= totalCntQ.first;
     endrule
 
     method Action put(Bit#(48) data);
@@ -496,6 +515,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
         noiseMargin <= data;
     endmethod
     method Action put_matrix_cnt(Bit#(32) cnt);
-        totalMatrixCnt <= cnt;
+        totalCntQ.enq(cnt);
     endmethod
 endmodule

@@ -555,13 +555,13 @@ module mkZfpCompress (ZfpCompressIfc);
     endrule
 
     rule finalSend_and_reset (last_out_trigger == 0);
-        if (!outputQ.notEmpty) begin
+        /* if (!outputQ.notEmpty) begin */
             Bit#(32) idx_6k = inputCnt;
             matrix_6k_idxQ.enq(idx_6k);
             inputCnt <= 0;
             mergeCycle <= 3;
             last_out_trigger <= 30;
-        end
+        /* end */
     endrule
 
 
