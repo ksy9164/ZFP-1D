@@ -1,1 +1,1 @@
-cpp/obj/bsim
+./cpp/obj/bsim

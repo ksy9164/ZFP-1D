@@ -1,14 +1,13 @@
 import FIFO::*;
 import FIFOF::*;
 import Vector::*;
-import Shifter::*;
+import BitShifter::*;
 
 interface ZfpCompressIfc;
     method Action put(Vector#(4, Bit#(64)) data);
     method Action put_noiseMargin(Int#(7) size);
     method Action put_matrix_cnt(Bit#(32) cnt);
     method ActionValue#(Bit#(128)) get;
-    method ActionValue#(Bit#(32)) get_6k_idx;
 endinterface
 
 function Bit#(64) uint_to_int(Bit#(64) t);
@@ -68,7 +67,7 @@ endfunction
 module mkZfpCompress (ZfpCompressIfc);
     /* Rule to Rule FIFO */
     FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
-    FIFOF#(Bit#(128)) outputQ <- mkSizedFIFOF(20);
+    FIFO#(Bit#(128)) outputQ <- mkSizedFIFO(11);
 
     Reg#(Int#(7)) noiseMargin <- mkReg(0);
     FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
@@ -79,7 +78,6 @@ module mkZfpCompress (ZfpCompressIfc);
     // new
     FIFO#(Bit#(11)) sendMaximumExp <- mkSizedFIFO(5);
     FIFO#(Bit#(11)) maximumExp <- mkSizedFIFO(5);
-    FIFO#(Bit#(32)) matrix_6k_idxQ <- mkSizedFIFO(5);
     FIFO#(Bit#(11)) encodingExp <- mkSizedFIFO(31);
 
     FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
@@ -389,7 +387,6 @@ module mkZfpCompress (ZfpCompressIfc);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
     Reg#(Bool) flushTrigger <- mkReg(False);
     Reg#(Bit#(5)) last_out_trigger <- mkReg(30);
-    Reg#(Bit#(32)) chunk_idx_sum <- mkReg(0);
 
     rule preOutGroup1;
         toOut_Group_1.deq;
@@ -410,7 +407,7 @@ module mkZfpCompress (ZfpCompressIfc);
         toOut_Group_1_d.enq(merged);
     endrule
 
-(* descending_urgency = "out_Group_1, out_Group_2, out_Group_3, flush6K, send, wait_for_last, finalSend_and_reset" *)
+(* descending_urgency = "out_Group_1, out_Group_2, out_Group_3, flush6K, finalSend_and_reset" *)
     /* Exp data & 1st element of input */
     rule out_Group_1 (mergeCycle == 0); // triger to 4K
         toOut_Group_1_amount.deq;
@@ -435,14 +432,12 @@ module mkZfpCompress (ZfpCompressIfc);
         end
 
         if (bud == 0) begin
+            inputCnt <= inputCnt + 1;
             if (trigger) begin
                 mergeCycle <= 3;
-                Bit#(32) idx_6k = inputCnt;
-                matrix_6k_idxQ.enq(idx_6k + 1);
             end else begin
                 mergeCycle <= 0;
             end
-            inputCnt <= inputCnt + 1;
         end else begin
             mergeCycle <= 1;
         end
@@ -467,14 +462,12 @@ module mkZfpCompress (ZfpCompressIfc);
         if (currentBudget > 4) begin
             mergeCycle <= 2;
         end else begin
+            inputCnt <= inputCnt + 1;
             if (flushTrigger) begin
                 mergeCycle <= 3;
-                Bit#(32) idx_6k = inputCnt;
-                matrix_6k_idxQ.enq(idx_6k + 1);
             end else begin
                 mergeCycle <= 0;
             end
-            inputCnt <= inputCnt + 1;
         end
 
         chunkAmount <= chunkAmount + zeroExtend(a);
@@ -498,8 +491,6 @@ module mkZfpCompress (ZfpCompressIfc);
         chunkAmount <= chunkAmount + zeroExtend(a);
         if (flushTrigger) begin
             mergeCycle <= 3;
-            Bit#(32) idx_6k = inputCnt;
-            matrix_6k_idxQ.enq(idx_6k + 1);
         end else begin
             mergeCycle <= 0;
         end
@@ -550,18 +541,10 @@ module mkZfpCompress (ZfpCompressIfc);
         send_buffer <= d;
     endrule
 
-    rule wait_for_last(totalMatrixCnt == inputCnt && last_out_trigger != 0);
-        last_out_trigger <= last_out_trigger - 1;
-    endrule
-
-    rule finalSend_and_reset (last_out_trigger == 0);
-        /* if (!outputQ.notEmpty) begin */
-            Bit#(32) idx_6k = inputCnt;
-            matrix_6k_idxQ.enq(idx_6k);
-            inputCnt <= 0;
-            mergeCycle <= 3;
-            last_out_trigger <= 30;
-        /* end */
+    rule finalSend_and_reset (totalMatrixCnt == inputCnt);
+        inputCnt <= 0;
+        mergeCycle <= 3;
+        last_out_trigger <= 30;
     endrule
 
 
@@ -583,9 +566,5 @@ module mkZfpCompress (ZfpCompressIfc);
         outputQ.deq;
         $display("%b",outputQ.first);
         return outputQ.first;
-    endmethod
-    method ActionValue#(Bit#(32)) get_6k_idx;
-        matrix_6k_idxQ.deq;
-        return matrix_6k_idxQ.first;
     endmethod
 endmodule

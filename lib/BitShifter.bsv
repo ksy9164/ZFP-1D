@@ -1,4 +1,4 @@
-package Shifter;
+package BitShifter;
 
 import GetPut::*;
 import FIFO::*;
