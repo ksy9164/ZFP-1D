@@ -104,7 +104,7 @@ module mkZfpDecompress (ZfpDecompressIfc);
     Reg#(Bit#(96)) inputBuf <- mkReg(0);
     Reg#(Bit#(32)) inputCnt <- mkReg(0);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
-    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(0);
+    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(1000);
     Reg#(Bool) flushTrigger <- mkReg(False);
 
     rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
@@ -269,7 +269,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
     rule flush6K (inputCycle == 3);
         Bit#(16) amount = chunkAmount;
         inputQ.deq;
-        $display("@@@%d %b",amount,inputQ.first);
         if (inputBufOff != 0) begin
             chunkAmount <= chunkAmount + zeroExtend(inputBufOff) + 48;
             inputBufOff <= 0;
@@ -278,12 +277,15 @@ module mkZfpDecompress (ZfpDecompressIfc);
             flushTrigger <= False;
             inputBufOff <= 0;
             chunkAmount <= 0;
+            if (inputCnt == totalMatrixCnt) begin
+                inputCnt <= 0;
+            end
         end else begin
             chunkAmount <= chunkAmount + 48;
         end
     endrule
 
-    rule last_in_ctl(inputCycle == 0 && inputCnt == totalMatrixCnt && totalMatrixCnt != 0);
+    rule last_in_ctl(inputCycle == 0 && inputCnt == totalMatrixCnt);
         inputCycle <= 3;
         inputCnt <= 0;
     endrule
