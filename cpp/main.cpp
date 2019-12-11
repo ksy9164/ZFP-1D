@@ -53,24 +53,31 @@ int main(int argc, char** argv) {
     /* put matrix number */
     pcie->userWriteWord(4, matrixNumber);
 
-    for (int i = 0; i < matrixNumber * 2 * 4; i++) {
+    for (int i = 0; i < 100 * 2 * 4; i++) {
         pcie->userWriteWord(12, originMatrix[i]);
     }
 
-    for (int i = 0;  i < matrixNumber * 2 * 4; ++i) {
+    for (int i = 0; i < (matrixNumber-100) * 2 * 4; i++) {
+        pcie->userWriteWord(12, originMatrix[i + 100 * 2 * 4]);
         uint32_t getd = pcie->userReadWord(0);
         decompMatrix[i] = getd;
     }
 
+    for (int i = (matrixNumber-100) * 2 * 4 ;  i < matrixNumber * 2 * 4; ++i) {
+        uint32_t getd = pcie->userReadWord(0);
+        decompMatrix[i] = getd;
+    }
+
+    /* put matrix data */
     FILE* out = fopen("result.bin", "wb");
     fwrite(decompMatrix, sizeof(double), matrixNumber * 4, out);
 
-    /* put matrix data */
 /*     pthread_t p_thread[2];
  *     pthread_create(&p_thread[0],NULL,send_data,(void *)originMatrix);
  *     pthread_create(&p_thread[1],NULL,get_data,(void *)decompMatrix);
  *
  *     pthread_join(p_thread[0],(void **)&status);
  *     pthread_join(p_thread[1],(void **)&status); */
+
     return 0;
 }
