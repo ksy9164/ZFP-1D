@@ -427,7 +427,7 @@ module mkZfpCompress (ZfpCompressIfc);
         else
             pipeShifter_off <= pipeShifter_off + zeroExtend(a);
 
-        if (chunkAmount > 49152 - 512) begin
+        if (chunkAmount > 49152 - 600) begin
             trigger = True;
         end
 

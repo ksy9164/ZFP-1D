@@ -142,7 +142,7 @@ module mkZfpDecompress (ZfpDecompressIfc);
             end
         end
 
-        if (chunkAmount > 49152 - 512) begin
+        if (chunkAmount > 49152 - 600) begin
             trigger = True;
         end
 
