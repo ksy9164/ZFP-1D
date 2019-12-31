@@ -9,6 +9,7 @@ interface ZfpDecompressIfc;
     method Action put_noiseMargin(Int#(7) data);
     method Action put_matrix_cnt(Bit#(32) cnt);
     method ActionValue#(Vector#(4,Bit#(64))) get;
+    method ActionValue#(Bool) check_last;
 endinterface
 function Bit#(96)catBuf(Bit#(96)in_buf, Bit#(48)d, Bit#(7)in_bufoff);
     Bit#(96) t = zeroExtend(d);
@@ -94,6 +95,8 @@ module mkZfpDecompress (ZfpDecompressIfc);
     FIFO#(Vector#(4,Bit#(2))) toFindMSB_code <- mkFIFO;
     FIFO#(Vector#(4,Bit#(7))) toGetExp_msb <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) toGetExp <- mkFIFO;
+    FIFO#(Bool) check_lastQ_pre <- mkFIFO;
+    FIFO#(Bool) check_lastQ <- mkSizedFIFO(20);
 
     Reg#(Int#(7)) noiseMargin <- mkReg(0);
     Reg#(Bit#(4)) encodeBudget <- mkReg(0);
@@ -110,12 +113,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
     rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
         Bit#(7)in_bufoff = inputBufOff;
         Bit#(96)in_buf = inputBuf;
-        if (in_bufoff < 48) begin
-            inputQ.deq;
-            let d = inputQ.first;
-            in_buf = catBuf(in_buf,d,in_bufoff);
-            in_bufoff = in_bufoff + 48;
-        end
         Bit#(11) e = getE(in_buf);
         in_buf = in_buf >> 11;
         in_bufoff = in_bufoff - 11;
@@ -144,6 +141,9 @@ module mkZfpDecompress (ZfpDecompressIfc);
 
         if (chunkAmount > 49152 - 600) begin
             trigger = True;
+            check_lastQ_pre.enq(True);
+        end else begin
+            check_lastQ_pre.enq(False);
         end
 
         chunkAmount <= chunkAmount + 11;
@@ -160,6 +160,10 @@ module mkZfpDecompress (ZfpDecompressIfc);
         inputBufOff <= in_bufoff;
     endrule
 
+    rule check_lastQ_ctl;
+        check_lastQ_pre.deq;
+        check_lastQ.enq(check_lastQ_pre.first);
+    endrule
     FIFO#(Bit#(6)) toShiftA_s_Q <- mkFIFO;
     FIFO#(Bit#(48)) toShiftA_d_Q <- mkFIFO;
 
@@ -491,6 +495,10 @@ module mkZfpDecompress (ZfpDecompressIfc);
     method ActionValue#(Vector#(4,Bit#(64))) get;
         outputQ.deq;
         return outputQ.first;
+    endmethod
+    method ActionValue#(Bool) check_last;
+        check_lastQ.deq;
+        return check_lastQ.first;
     endmethod
     method Action put_noiseMargin(Int#(7) data);
         noiseMargin <= data;

@@ -39,7 +39,10 @@ module mkHwMain#(PcieUserIfc pcie)
 
     rule getDecomptoBRAM;
         Vector#(4,Bit#(64)) temp <- dzfp.get;
-        get_decomp_toBRAM.enq(temp);
+        Bool b <- dzfp.check_last;
+        if (b) begin
+            get_decomp_toBRAM.enq(temp);
+        end
     endrule
 
     rule getDecompFromBRAM;
