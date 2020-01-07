@@ -113,6 +113,12 @@ module mkZfpDecompress (ZfpDecompressIfc);
     rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
         Bit#(7)in_bufoff = inputBufOff;
         Bit#(96)in_buf = inputBuf;
+        if (in_bufoff < 48) begin
+            inputQ.deq;
+            let d = inputQ.first;
+            in_buf = catBuf(in_buf,d,in_bufoff);
+            in_bufoff = in_bufoff + 48;
+        end
         Bit#(11) e = getE(in_buf);
         in_buf = in_buf >> 11;
         in_bufoff = in_bufoff - 11;
