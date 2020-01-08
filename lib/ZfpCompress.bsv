@@ -7,7 +7,7 @@ interface ZfpCompressIfc;
     method Action put(Vector#(4, Bit#(64)) data);
     method Action put_noiseMargin(Int#(7) size);
     method Action put_matrix_cnt(Bit#(32) cnt);
-    method ActionValue#(Bit#(128)) get;
+    method ActionValue#(Bit#(256)) get;
 endinterface
 
 function Bit#(64) uint_to_int(Bit#(64) t);
@@ -67,7 +67,7 @@ endfunction
 module mkZfpCompress (ZfpCompressIfc);
     /* Rule to Rule FIFO */
     FIFO#(Vector#(4, Bit#(64))) inputQ <- mkFIFO;
-    FIFO#(Bit#(128)) outputQ <- mkSizedFIFO(11);
+    FIFO#(Bit#(256)) outputQ <- mkSizedFIFO(11);
 
     Reg#(Int#(7)) noiseMargin <- mkReg(0);
     FIFO#(Vector#(4, Bit#(7))) shiftQ <- mkSizedFIFO(5);
@@ -78,7 +78,9 @@ module mkZfpCompress (ZfpCompressIfc);
     // new
     FIFO#(Bit#(11)) sendMaximumExp <- mkSizedFIFO(5);
     FIFO#(Bit#(11)) maximumExp <- mkSizedFIFO(5);
-    FIFO#(Bit#(11)) encodingExp <- mkSizedFIFO(31);
+    FIFO#(Bit#(11)) encodingExp <- mkSizedFIFO(41);
+    FIFO#(Bit#(11)) encodingExp_post <- mkFIFO;
+    FIFO#(Bit#(11)) encodingExp_pre <- mkFIFO;
 
     FIFO#(Vector#(4, Bit#(64))) toGetFraction <- mkFIFO;
     Vector#(4,FIFO#(Bit#(1))) signQ <- replicateM(mkSizedFIFO(16));
@@ -103,20 +105,23 @@ module mkZfpCompress (ZfpCompressIfc);
     FIFOF#(Bit#(4)) encodeBudgetQ <- mkSizedFIFOF(16);
     FIFO#(Bit#(48)) toOut_Group_1 <- mkSizedFIFO(11);
 
-    FIFO#(Bit#(4)) toOut_Group_1_bud <- mkSizedFIFO(5);
-    FIFO#(Bit#(7)) toOut_Group_1_amount <- mkSizedFIFO(5);
-    FIFO#(Bit#(256)) toOut_Group_1_d <- mkSizedFIFO(5);
+    Vector#(2,FIFO#(Bit#(4))) toOut_Group_1_bud <- replicateM(mkSizedFIFO(5));
+    Vector#(2,FIFO#(Bit#(7))) toOut_Group_1_amount <- replicateM(mkSizedFIFO(5));
+    Vector#(2,FIFO#(Bit#(256))) toOut_Group_1_d <- replicateM(mkSizedFIFO(5));
 
-    FIFO#(Bit#(80)) toOut_Group_2_d <-mkFIFO;
-    FIFO#(Bit#(7)) toOut_Group_2_a <- mkFIFO;
-    FIFO#(Bit#(80)) toOut_Group_3_d <- mkFIFO;
-    FIFO#(Bit#(7)) toOut_Group_3_a <- mkFIFO;
+    Vector#(2,FIFO#(Bit#(80))) toOut_Group_2_d <-replicateM(mkFIFO);
+    Vector#(2,FIFO#(Bit#(7))) toOut_Group_2_a <- replicateM(mkFIFO);
+    
+    Vector#(2,FIFO#(Bit#(80))) toOut_Group_3_d <-replicateM(mkFIFO);
+    Vector#(2,FIFO#(Bit#(7))) toOut_Group_3_a <- replicateM(mkFIFO);
+
     Vector#(8,FIFO#(Bit#(1))) budgetMask <- replicateM(mkSizedFIFO(20));
-    FIFO#(Bit#(8)) toSend_amount <- mkSizedFIFO(20);
+    FIFO#(Bit#(8)) toSend_amount <- mkSizedFIFO(15);
+    Vector#(2,FIFO#(Bit#(8))) toSend_amount_pre <- replicateM(mkSizedFIFO(15));
 
-    Reg#(Bit#(2)) mergeCycle <- mkReg(0);
+    Vector#(2,Reg#(Bit#(2))) mergeCycle <- replicateM(mkReg(0));
 
-    ByteShiftIfc#(Bit#(256),7) pipeShiftL <- mkPipelineLeftShifter();
+    Vector#(2,ByteShiftIfc#(Bit#(256),8)) pipeShiftL <- replicateM(mkPipelineLeftShifter());
 
     /* buffer */
     Reg#(Bit#(8)) send_buffer_off <- mkReg(0);
@@ -137,7 +142,7 @@ module mkZfpCompress (ZfpCompressIfc);
         expMax = get_max(matrixExp[0],matrixExp[1],matrixExp[2],matrixExp[3]);
 
         toCalEncodeBudget.enq(expMax);
-        encodingExp.enq(expMax);
+        encodingExp_pre.enq(expMax);
         exp.enq(matrixExp);
         toGetFraction.enq(in);
     endrule
@@ -278,7 +283,6 @@ module mkZfpCompress (ZfpCompressIfc);
         Vector#(4, Bit#(64)) in = toConvertBits.first;
         for (Bit#(5)i = 0; i < 4; i = i + 1) begin
             in[i] = int_to_uint(in[i]);
-            /* $display("before %b ",in[i]); */
         end
         toShuffle.enq(in);
     endrule
@@ -351,6 +355,14 @@ module mkZfpCompress (ZfpCompressIfc);
         endrule
     end
 
+    FIFO#(Bit#(80)) scatter_Group_2_d <-mkFIFO;
+    FIFO#(Bit#(7)) scatter_Group_2_a <- mkFIFO;
+    FIFO#(Bit#(80)) scatter_Group_3_d <- mkFIFO;
+    FIFO#(Bit#(7)) scatter_Group_3_a <- mkFIFO;
+    FIFO#(Bit#(4)) scatter_Group_1_bud <- mkSizedFIFO(5);
+    FIFO#(Bit#(7)) scatter_Group_1_amount <- mkSizedFIFO(5);
+    FIFO#(Bit#(256)) scatter_Group_1_d <- mkSizedFIFO(5);
+
     for (Bit#(5)i=0; i < 2; i = i + 1) begin
         rule merge2;
             Vector#(4, Bit#(2)) header = replicate(0);
@@ -372,28 +384,44 @@ module mkZfpCompress (ZfpCompressIfc);
 
             Bit#(7) amount = zeroExtend(a1) + zeroExtend(a2);
             if (i == 0 && amount != 0) begin
-                toOut_Group_2_d.enq(data);
-                toOut_Group_2_a.enq(amount);
+                scatter_Group_2_d.enq(data);
+                scatter_Group_2_a.enq(amount);
             end else if (i == 1 && amount != 0) begin
-                toOut_Group_3_d.enq(data);
-                toOut_Group_3_a.enq(amount);
+                scatter_Group_3_d.enq(data);
+                scatter_Group_3_a.enq(amount);
             end
         endrule
     end
 
-    Reg#(Bit#(4)) currentBudget <- mkReg(0);
-    Reg#(Bit#(8)) pipeShifter_off <- mkReg(0);
+    Vector#(2,Reg#(Bit#(4))) currentBudget <- replicateM(mkReg(0));
+    Vector#(2,Reg#(Bit#(8))) pipeShifter_off <- replicateM(mkReg(0));
     Reg#(Bit#(32)) inputCnt <- mkReg(0);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
-    Reg#(Bool) flushTrigger <- mkReg(False);
     Reg#(Bit#(5)) last_out_trigger <- mkReg(30);
+    Reg#(Bit#(1)) scatter_c_1 <- mkReg(0);
+    Reg#(Bit#(1)) scatter_c_2 <- mkReg(0);
+    Reg#(Bit#(1)) scatter_c_3 <- mkReg(0);
+    Reg#(Bool) resetTrigger <- mkReg(False);
+
+
+    rule encoding_Exp_bridge;
+        encodingExp_pre.deq;
+        let d = encodingExp_pre.first;
+        encodingExp.enq(d);
+    endrule
+
+    rule encoding_Exp_post;
+        encodingExp.deq;
+        let d = encodingExp.first;
+        encodingExp_post.enq(d);
+    endrule
 
     rule preOutGroup1;
         toOut_Group_1.deq;
-        encodingExp.deq;
+        encodingExp_post.deq;
         encodeBudgetQ.deq;
         let d = toOut_Group_1.first;
-        let e = encodingExp.first;
+        let e = encodingExp_post.first;
         let bud = encodeBudgetQ.first;
         Bit#(7) a = zeroExtend(bud) * 6 + 11;
         Bit#(6) s =  48 - (zeroExtend(bud) * 6);
@@ -402,149 +430,223 @@ module mkZfpCompress (ZfpCompressIfc);
         merged = merged << 11;
         merged = merged | zeroExtend(e);
 
-        toOut_Group_1_bud.enq(bud);
-        toOut_Group_1_amount.enq(a);
-        toOut_Group_1_d.enq(merged);
+        scatter_Group_1_bud.enq(bud);
+        scatter_Group_1_amount.enq(a);
+        scatter_Group_1_d.enq(merged);
     endrule
 
-(* descending_urgency = "out_Group_1, out_Group_2, out_Group_3, flush6K, finalSend_and_reset" *)
-    /* Exp data & 1st element of input */
-    rule out_Group_1 (mergeCycle == 0); // triger to 4K
-        toOut_Group_1_amount.deq;
-        toOut_Group_1_d.deq;
-        toOut_Group_1_bud.deq;
+    rule scatter_group_1;
+        scatter_Group_1_bud.deq;
+        scatter_Group_1_amount.deq;
+        scatter_Group_1_d.deq;
+        Bit#(4) bud = scatter_Group_1_bud.first;
+        Bit#(7) amount = scatter_Group_1_amount.first;
+        Bit#(256) d = scatter_Group_1_d.first;
+        Bit#(1) cycle = scatter_c_1;
 
-        Bit#(7) a = toOut_Group_1_amount.first;
-        Bit#(256) merged = toOut_Group_1_d.first;
-        Bit#(4) bud = toOut_Group_1_bud.first;
-        Bool trigger = flushTrigger;
+        toOut_Group_1_bud[cycle].enq(bud);
+        toOut_Group_1_amount[cycle].enq(amount);
+        toOut_Group_1_d[cycle].enq(d);
 
-        currentBudget <= bud;
-        pipeShiftL.rotateBitBy(merged, truncate(pipeShifter_off));
+        scatter_c_1 <= scatter_c_1 + 1;
+    endrule
 
-        if (pipeShifter_off + zeroExtend(a) >= 128)
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a) - 128;
+    rule scatter_group_2;
+        scatter_Group_2_d.deq;
+        scatter_Group_2_a.deq;
+        Bit#(80) d = scatter_Group_2_d.first;
+        Bit#(7) amount = scatter_Group_2_a.first;
+        Bit#(1) cycle = scatter_c_2;
+
+        toOut_Group_2_d[cycle].enq(d);
+        toOut_Group_2_a[cycle].enq(amount);
+
+        scatter_c_2 <= scatter_c_2 + 1;
+    endrule
+
+    rule scatter_group_3;
+        scatter_Group_3_d.deq;
+        scatter_Group_3_a.deq;
+        Bit#(80) d = scatter_Group_3_d.first;
+        Bit#(7) amount = scatter_Group_3_a.first;
+        Bit#(1) cycle = scatter_c_3;
+
+        toOut_Group_3_d[cycle].enq(d);
+        toOut_Group_3_a[cycle].enq(amount);
+
+        scatter_c_3 <= scatter_c_3 + 1;
+    endrule
+
+    Vector#(2,FIFO#(Bit#(1))) check_merge_last <- replicateM(mkSizedFIFO(15));
+    // new algorithm
+    for (Bit#(2) i = 0; i < 2; i = i + 1) begin
+        rule out_Group_1(mergeCycle[i] == 0);
+            toOut_Group_1_amount[i].deq;
+            toOut_Group_1_d[i].deq;
+            toOut_Group_1_bud[i].deq;
+
+            Bit#(7) a = toOut_Group_1_amount[i].first;
+            Bit#(256) merged = toOut_Group_1_d[i].first;
+            Bit#(4) bud = toOut_Group_1_bud[i].first;
+
+            currentBudget[i] <= bud;
+            pipeShiftL[i].rotateBitBy(merged,0);
+
+            if (bud == 0) begin
+                check_merge_last[i].enq(1);
+                toSend_amount_pre[i].enq(zeroExtend(a));
+                pipeShifter_off[i] <= 0;
+            end else begin
+                check_merge_last[i].enq(0);
+                mergeCycle[i] <= mergeCycle[i] + 1;
+                pipeShifter_off[i] <= zeroExtend(a);
+            end
+        endrule
+    end
+
+    for (Bit#(2) i = 0; i < 2; i = i + 1) begin
+        rule out_Group_2(mergeCycle[i] == 1);
+            toOut_Group_2_d[i].deq;
+            toOut_Group_2_a[i].deq;
+            Bit#(80) d = toOut_Group_2_d[i].first;
+            Bit#(8) a = zeroExtend(toOut_Group_2_a[i].first);
+            Bit#(8) off = pipeShifter_off[i];
+
+            pipeShiftL[i].rotateBitBy(zeroExtend(d), off);
+
+            if (currentBudget[i] > 4) begin
+                check_merge_last[i].enq(0);
+                mergeCycle[i] <= mergeCycle[i] + 1;
+                pipeShifter_off[i] <= off + a;
+            end else begin
+                check_merge_last[i].enq(1);
+                mergeCycle[i] <= 0;
+                toSend_amount_pre[i].enq(off + a);
+                pipeShifter_off[i] <= 0;
+            end
+        endrule
+    end
+
+    for (Bit#(2) i = 0; i < 2; i = i + 1) begin
+        rule out_Group_3(mergeCycle[i] == 2);
+            toOut_Group_3_d[i].deq;
+            toOut_Group_3_a[i].deq;
+            Bit#(80) d = toOut_Group_3_d[i].first;
+            Bit#(8) a = zeroExtend(toOut_Group_3_a[i].first);
+
+            pipeShiftL[i].rotateBitBy(zeroExtend(d), pipeShifter_off[i]);
+
+            a = a + pipeShifter_off[i];
+            toSend_amount_pre[i].enq(a);
+
+            check_merge_last[i].enq(1);
+            mergeCycle[i] <= 0;
+            pipeShifter_off[i] <= 0;
+        endrule
+    end
+
+    Vector#(2,Reg#(Bit#(256))) encoded_d <- replicateM(mkReg(0));
+    FIFO#(Bit#(256)) mergeLastQ <- mkSizedFIFO(5);
+    Vector#(2,FIFO#(Bit#(256))) mergeLastQ_pre <- replicateM(mkSizedFIFO(5));
+    Reg#(Bit#(1)) merging_last_cycle <- mkReg(0);
+
+    Reg#(Bool) flush_trigger <- mkReg(False);
+    for (Bit#(2) i = 0; i < 2; i = i + 1) begin
+        rule get_encoded;
+            check_merge_last[i].deq;
+            Bit#(256) d = encoded_d[i];
+            Bit#(256) t <- pipeShiftL[i].getVal;
+            Bit#(1) isLast = check_merge_last[i].first;
+            d = d | t;
+            if (isLast == 1) begin
+                mergeLastQ_pre[i].enq(d);
+                encoded_d[i] <= 0;
+            end else begin
+                encoded_d[i] <= d;
+            end
+        endrule
+    end
+
+    FIFO#(Bit#(8)) merging_amount <- mkSizedFIFO(10);
+    rule cycle_merge;
+        Bit#(1) cycle = merging_last_cycle;
+        mergeLastQ_pre[cycle].deq;
+        toSend_amount_pre[cycle].deq;
+        Bit#(256) d = mergeLastQ_pre[cycle].first;
+        Bit#(8) amount = toSend_amount_pre[cycle].first;
+        mergeLastQ.enq(d);
+        toSend_amount.enq(amount);
+        merging_last_cycle <= merging_last_cycle + 1;
+    endrule
+
+    ByteShiftIfc#(Bit#(512),8) pipes_last <- mkPipelineLeftShifter();
+    Reg#(Bit#(9)) pipes_off <- mkReg(0);
+
+    rule merging_last(!flush_trigger&& inputCnt != totalMatrixCnt);
+        mergeLastQ.deq;
+        toSend_amount.deq;
+        Bit#(8) amount = toSend_amount.first;
+        Bit#(256) d = mergeLastQ.first;
+
+        pipes_last.rotateBitBy(zeroExtend(d), truncate(pipes_off));
+
+        if (pipes_off + zeroExtend(amount) >= 256)
+            pipes_off <= pipes_off + zeroExtend(amount) - 256;
         else
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a);
+            pipes_off <= pipes_off + zeroExtend(amount);
 
         if (chunkAmount > 49152 - 600) begin
-            trigger = True;
+            flush_trigger <= True;
         end
 
-        if (bud == 0) begin
-            inputCnt <= inputCnt + 1;
-            if (trigger) begin
-                mergeCycle <= 3;
-            end else begin
-                mergeCycle <= 0;
-            end
-        end else begin
-            mergeCycle <= 1;
-        end
-
-        chunkAmount <= chunkAmount + zeroExtend(a);
-        flushTrigger <= trigger;
-        toSend_amount.enq(zeroExtend(a));
-    endrule
-
-    rule out_Group_2 (mergeCycle == 1);
-        toOut_Group_2_d.deq;
-        toOut_Group_2_a.deq;
-        let d = toOut_Group_2_d.first;
-        let a = toOut_Group_2_a.first;
-
-        pipeShiftL.rotateBitBy(zeroExtend(d), truncate(pipeShifter_off));
-        if (pipeShifter_off + zeroExtend(a) >= 128)
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a) - 128;
-        else
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a);
-
-        if (currentBudget > 4) begin
-            mergeCycle <= 2;
-        end else begin
-            inputCnt <= inputCnt + 1;
-            if (flushTrigger) begin
-                mergeCycle <= 3;
-            end else begin
-                mergeCycle <= 0;
-            end
-        end
-
-        chunkAmount <= chunkAmount + zeroExtend(a);
-        toSend_amount.enq(zeroExtend(a));
-    endrule
-
-    rule out_Group_3 (mergeCycle == 2);
-        toOut_Group_3_d.deq;
-        toOut_Group_3_a.deq;
-        let d = toOut_Group_3_d.first;
-        let a = toOut_Group_3_a.first;
-
-        pipeShiftL.rotateBitBy(zeroExtend(d), truncate(pipeShifter_off));
-        if (pipeShifter_off + zeroExtend(a) >= 128)
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a) - 128;
-        else
-            pipeShifter_off <= pipeShifter_off + zeroExtend(a);
-
-        toSend_amount.enq(zeroExtend(a));
-
-        chunkAmount <= chunkAmount + zeroExtend(a);
-        if (flushTrigger) begin
-            mergeCycle <= 3;
-        end else begin
-            mergeCycle <= 0;
-        end
         inputCnt <= inputCnt + 1;
+        merging_amount.enq(amount);
+        chunkAmount <= chunkAmount + zeroExtend(amount);
     endrule
 
-    rule flush6K (mergeCycle == 3);
-        Bit#(16) amount = chunkAmount;
-        Bit#(8) a = 0;
-        Bool last = False;
-        if (49152 - amount > 127) begin
+    rule flush_6k(flush_trigger || inputCnt == totalMatrixCnt);
+        Bit#(9) a = 0;
+        $display("flush chunk num is %d",chunkAmount);
+        if (49152 - chunkAmount > 127) begin
             a = 128; 
+            chunkAmount <= chunkAmount + 128;
         end else begin
-            a = truncate(49152 - amount);
-            last = True;
-        end
-
-        pipeShiftL.rotateBitBy(0, truncate(pipeShifter_off));
-        if (pipeShifter_off + zeroExtend(a) >= 128)
-            pipeShifter_off <= pipeShifter_off + a - 128;
-        else
-            pipeShifter_off <= pipeShifter_off +a;
-
-        toSend_amount.enq(a);
-
-        if (last) begin
+            a = truncate(49152 - chunkAmount);
             chunkAmount <= 0;
-            mergeCycle <= 0;
-            flushTrigger <= False;
-            $display("this last is %d ",pipeShifter_off + a);
-        end else begin
-            chunkAmount <= amount + 128;
+            flush_trigger <= False;
+            if (inputCnt == totalMatrixCnt) begin
+                inputCnt <= 0;
+            end
         end
+
+        pipes_last.rotateBitBy(0, truncate(pipes_off));
+
+        if (pipes_off + a >= 256)
+            pipes_off <= pipes_off + a - 256;
+        else
+            pipes_off <= pipes_off + a;
+
+        merging_amount.enq(truncate(a));
     endrule
+
+    Reg#(Bit#(512)) last_buf <- mkReg(0);
+    Reg#(Bit#(9)) last_buf_off <- mkReg(0);
 
     rule send;
-        Bit#(256) d = send_buffer;
-        Bit#(256) t <- pipeShiftL.getVal;
+        Bit#(512) d = last_buf;
+        Bit#(512) t <- pipes_last.getVal;
         d = d | t;
-        toSend_amount.deq;
-        Bit#(8) off = send_buffer_off + toSend_amount.first;
-        if (off >= 128) begin
-            off = off - 128;
-            outputQ.enq(d[127:0]);
-            d = d >> 128;
-        end
-        send_buffer_off <= off;
-        send_buffer <= d;
-    endrule
+        merging_amount.deq;
+        Bit#(9) off = last_buf_off + zeroExtend(merging_amount.first);
 
-    rule finalSend_and_reset (totalMatrixCnt == inputCnt);
-        inputCnt <= 0;
-        mergeCycle <= 3;
-        last_out_trigger <= 30;
+        if (off >= 256) begin
+            off = off - 256;
+            outputQ.enq(d[255:0]);
+            d = d >> 256;
+        end
+
+        last_buf_off <= off;
+        last_buf <= d;
     endrule
 
 
@@ -562,9 +664,9 @@ module mkZfpCompress (ZfpCompressIfc);
     endmethod
 
     /* Send Output to Top.bsv */
-    method ActionValue#(Bit#(128)) get;
+    method ActionValue#(Bit#(256)) get;
         outputQ.deq;
-        $display("%b",outputQ.first);
+        $display("comp is %b",outputQ.first);
         return outputQ.first;
     endmethod
 endmodule

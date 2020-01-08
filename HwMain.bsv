@@ -29,6 +29,7 @@ module mkHwMain#(PcieUserIfc pcie)
     ZfpDecompressIfc dzfp <- mkZfpDecompress;
 
     FIFO#(Bit#(32)) send_pcieQ <- mkFIFO;
+    FIFO#(Bit#(32)) send_pcieQ_pre <- mkFIFO;
     FIFO#(Bit#(32)) inputQ <- mkFIFO;
     Reg#(Bit#(64)) inputBuf <- mkReg(0);
     FIFO#(Bit#(64)) mergeInputQ <- mkFIFO;
@@ -36,13 +37,20 @@ module mkHwMain#(PcieUserIfc pcie)
 
     FIFO#(Vector#(4,Bit#(64))) get_decomp_toBRAM <- mkSizedBRAMFIFO(1000);
     FIFO#(Vector#(4,Bit#(64))) get_decomp_fromBRAM <- mkFIFO;
+    FIFO#(Vector#(4,Bit#(64))) get_decomp_toBRAM_pre <- mkFIFO;
 
     rule getDecomptoBRAM;
         Vector#(4,Bit#(64)) temp <- dzfp.get;
         Bool b <- dzfp.check_last;
-        if (b) begin
-            get_decomp_toBRAM.enq(temp);
-        end
+        /* if (b) begin */
+            get_decomp_toBRAM_pre.enq(temp);
+        /* end */
+    endrule
+
+    rule toBRAM;
+        get_decomp_toBRAM_pre.deq;
+        let d = get_decomp_toBRAM_pre.first;
+        get_decomp_toBRAM.enq(d);
     endrule
 
     rule getDecompFromBRAM;
@@ -63,19 +71,25 @@ module mkHwMain#(PcieUserIfc pcie)
             d = get_decomp_fromBRAM.first;
         end
         case (dzfpCycle)
-            0:send_pcieQ.enq(d[0][31:0]);
-            1:send_pcieQ.enq(d[0][63:32]);
-            2:send_pcieQ.enq(d[1][31:0]);
-            3:send_pcieQ.enq(d[1][63:32]);
-            4:send_pcieQ.enq(d[2][31:0]);
-            5:send_pcieQ.enq(d[2][63:32]);
-            6:send_pcieQ.enq(d[3][31:0]);
-            7:send_pcieQ.enq(d[3][63:32]);
+            0:send_pcieQ_pre.enq(d[0][31:0]);
+            1:send_pcieQ_pre.enq(d[0][63:32]);
+            2:send_pcieQ_pre.enq(d[1][31:0]);
+            3:send_pcieQ_pre.enq(d[1][63:32]);
+            4:send_pcieQ_pre.enq(d[2][31:0]);
+            5:send_pcieQ_pre.enq(d[2][63:32]);
+            6:send_pcieQ_pre.enq(d[3][31:0]);
+            7:send_pcieQ_pre.enq(d[3][63:32]);
         endcase
         for (Bit#(4)i=0;i<4;i=i+1) begin
             sendBuff[i] <= d[i];
         end
         dzfpCycle <= dzfpCycle + 1;
+    endrule
+
+    rule send_pcie_bridge;
+        send_pcieQ_pre.deq;
+        let d = send_pcieQ_pre.first;
+        send_pcieQ.enq(d);
     endrule
 
     rule sendToHost;
@@ -152,11 +166,27 @@ module mkHwMain#(PcieUserIfc pcie)
     Reg#(Bit#(160)) comp_buf <- mkReg(0);
     Reg#(Bool) tset <- mkReg(False);
 
+    Reg#(Bit#(1)) deserial_cycle <- mkReg(0);
+    Reg#(Bit#(128)) temp_d <- mkReg(0);
+    FIFO#(Bit#(128)) deserialQ <- mkFIFO;
+
+    rule deserial;
+        if (deserial_cycle == 0) begin
+            Bit#(256) d <- zfp.get;
+            deserialQ.enq(truncate(d));
+            temp_d <= truncateLSB(d);
+        end else begin
+            deserialQ.enq(temp_d);
+        end
+        deserial_cycle <= deserial_cycle + 1;
+    endrule
+
     rule sendToDecomp;
         Bit#(8) b_off = comp_buf_off;
         Bit#(160) b_buf = comp_buf;
         if (b_off < 48) begin
-            Bit#(128) compressed <- zfp.get;
+            deserialQ.deq;
+            Bit#(128) compressed = deserialQ.first;
             Bit#(160) temp_buff = zeroExtend(compressed);
             case (b_off)
                 16 : begin

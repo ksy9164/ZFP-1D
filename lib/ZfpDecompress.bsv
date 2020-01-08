@@ -160,7 +160,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
         end 
 
         flushTrigger <= trigger;
-        $display("chunk  1 is %d ",chunkAmount);
         toGroupA_E.enq(e);
         inputBuf <= in_buf;
         inputBufOff <= in_bufoff;
@@ -183,7 +182,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
             in_bufoff = in_bufoff + 48;
         end
         Bit#(48) data_a = get_a(in_buf);
-        $display("chunk 2 is %d ",chunkAmount);
         Bit#(6) shift = zeroExtend(encodeBudget) * 6;
         chunkAmount <= chunkAmount + zeroExtend(shift);
         in_buf = in_buf >> shift;
@@ -231,7 +229,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
         end else begin
             header = 3;
         end
-        $display("chunk 3 is %d ",chunkAmount);
 
         data = truncate(in_buf);
         case (header)
@@ -491,6 +488,7 @@ module mkZfpDecompress (ZfpDecompressIfc);
             d[i] = d[i] << (msb[i] + 1 +2);
             decomp[i][51:0] = d[i][63:12];
             decomp[i][63] = sign[i];
+            $display("out is %b",decomp[i]);
         end
         outputQ.enq(decomp);
     endrule
