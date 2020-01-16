@@ -6,8 +6,8 @@ import Vector::*;
 
 interface ZfpDecompressIfc;
     method Action put(Bit#(48) data);
+    method Action finish(Bool trigger);
     method Action put_noiseMargin(Int#(7) data);
-    method Action put_matrix_cnt(Bit#(32) cnt);
     method ActionValue#(Vector#(4,Bit#(64))) get;
     method ActionValue#(Bool) check_last;
 endinterface
@@ -105,12 +105,13 @@ module mkZfpDecompress (ZfpDecompressIfc);
     Reg#(Bit#(2)) inputCycle <- mkReg(0);
     Reg#(Bit#(7)) inputBufOff <- mkReg(0);
     Reg#(Bit#(96)) inputBuf <- mkReg(0);
-    Reg#(Bit#(32)) inputCnt <- mkReg(0);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
-    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(1000);
     Reg#(Bool) flushTrigger <- mkReg(False);
+    Reg#(Bool) finishTrigger <- mkReg(False);
 
-    rule getGroup1_E(inputCycle == 0 && inputCnt != totalMatrixCnt);
+    Reg#(Bit#(32)) temp_cnt <- mkReg(0);
+
+    rule getGroup1_E(inputCycle == 0 && !finishTrigger);
         Bit#(7)in_bufoff = inputBufOff;
         Bit#(96)in_buf = inputBuf;
         if (in_bufoff < 48) begin
@@ -126,13 +127,14 @@ module mkZfpDecompress (ZfpDecompressIfc);
         Int#(11) exp_max = unpack(e) + 1023;
         Int#(11) margin = signExtend(noiseMargin);
         Bit#(6) budget = truncate(pack(exp_max + margin));
+        $display("budget is %d cnt is %d",budget,temp_cnt);
+        temp_cnt <= temp_cnt + 1;
         Bit#(6) bud_num = 0;
         Bool trigger = flushTrigger;
         
         if (budget == 0) begin
             encodeBudget <= 0;
             encodeBudgetQ.enq(0);
-            inputCnt <= inputCnt + 1;
             bud_num = 0;
         end else begin
             bud_num = (budget - 1) / 6 + 1;
@@ -257,7 +259,6 @@ module mkZfpDecompress (ZfpDecompressIfc);
 
         if (bud_cnt == encodeBudget) begin
             budget_cnt <= 0;
-            inputCnt <= inputCnt + 1;
             if (flushTrigger) begin
                 inputCycle <= 3;
             end else begin
@@ -284,17 +285,14 @@ module mkZfpDecompress (ZfpDecompressIfc);
             flushTrigger <= False;
             inputBufOff <= 0;
             chunkAmount <= 0;
-            if (inputCnt == totalMatrixCnt) begin
-                inputCnt <= 0;
-            end
         end else begin
             chunkAmount <= chunkAmount + 48;
         end
     endrule
 
-    rule last_in_ctl(inputCycle == 0 && inputCnt == totalMatrixCnt);
+    rule last_in_ctl(inputCycle == 0 && finishTrigger);
         inputCycle <= 3;
-        inputCnt <= 0;
+        finishTrigger <= False;
     endrule
 
     Vector#(3,Reg#(Bit#(48))) data_groupB <- replicateM(mkReg(0));
@@ -496,6 +494,9 @@ module mkZfpDecompress (ZfpDecompressIfc);
     method Action put(Bit#(48) data);
         inputQ.enq(data);
     endmethod
+    method Action finish(Bool trigger) if (!finishTrigger);
+        finishTrigger <= True;
+    endmethod
     method ActionValue#(Vector#(4,Bit#(64))) get;
         outputQ.deq;
         return outputQ.first;
@@ -506,8 +507,5 @@ module mkZfpDecompress (ZfpDecompressIfc);
     endmethod
     method Action put_noiseMargin(Int#(7) data);
         noiseMargin <= data;
-    endmethod
-    method Action put_matrix_cnt(Bit#(32) cnt);
-        totalMatrixCnt <= cnt;
     endmethod
 endmodule

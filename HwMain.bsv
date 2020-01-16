@@ -39,12 +39,27 @@ module mkHwMain#(PcieUserIfc pcie)
     FIFO#(Vector#(4,Bit#(64))) get_decomp_fromBRAM <- mkFIFO;
     FIFO#(Vector#(4,Bit#(64))) get_decomp_toBRAM_pre <- mkFIFO;
 
-    rule getDecomptoBRAM;
+    Reg#(Bit#(32)) outputCounter <- mkReg(0);
+    Reg#(Bit#(32)) totalMatrixCnt <- mkReg(1000);
+    Reg#(Bool) decomp_reset <- mkReg(False);
+
+    rule getDecomptoBRAM(totalMatrixCnt != outputCounter && !decomp_reset);
         Vector#(4,Bit#(64)) temp <- dzfp.get;
         Bool b <- dzfp.check_last;
         /* if (b) begin */
             get_decomp_toBRAM_pre.enq(temp);
+            outputCounter <= outputCounter + 1;
         /* end */
+    endrule
+
+    rule reset(totalMatrixCnt == outputCounter && !decomp_reset);
+        dzfp.finish(True);
+        decomp_reset <= True;
+    endrule
+
+    rule flush_decomp(decomp_reset);
+        Vector#(4,Bit#(64)) temp <- dzfp.get;
+        Bool b <- dzfp.check_last;
     endrule
 
     rule toBRAM;
@@ -122,7 +137,7 @@ module mkHwMain#(PcieUserIfc pcie)
             dzfp.put_noiseMargin(truncate(unpack(d)));
         end else if ( off == 1 ) begin
             zfp.put_matrix_cnt(d);
-            dzfp.put_matrix_cnt(d);
+            totalMatrixCnt <= d;
         end else if (off == 3) begin
             inputQ.enq(d);
         end else begin
