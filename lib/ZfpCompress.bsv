@@ -174,24 +174,22 @@ module mkZfpCompress (ZfpCompressIfc);
         Int#(11) margin = signExtend(noiseMargin);
         Bit#(6) budget = truncate(pack(exp_max + margin));
         Bit#(6) bud_num = (budget - 1) / 6 + 1;
+        
         if (budget == 0) begin
-            encodeBudgetQ.enq(0);
-            bud_num = 0;
-            for (Bit#(6)i=0; i<8; i = i+1) begin
-                budgetMask[i].enq(0);
-            end
+            bud_num = 1;
         end else begin
-            if (bud_num < 9) begin
-                encodeBudgetQ.enq(truncate(bud_num));
+            if (bud_num  >8) begin
+                bud_num = 8;
+            end 
+        end
+
+        encodeBudgetQ.enq(truncate(bud_num));
+
+        for (Bit#(6)i=0; i<8; i = i+1) begin
+            if (i < bud_num) begin
+                budgetMask[i].enq(1);
             end else begin
-                encodeBudgetQ.enq(8);
-            end
-            for (Bit#(6)i=0; i<8; i = i+1) begin
-                if (i < bud_num) begin
-                    budgetMask[i].enq(1);
-                end else begin
-                    budgetMask[i].enq(0);
-                end
+                budgetMask[i].enq(0);
             end
         end
         sendMaximumExp.enq(toCalEncodeBudget.first);
@@ -394,6 +392,7 @@ module mkZfpCompress (ZfpCompressIfc);
     end
 
     Vector#(2,Reg#(Bit#(4))) currentBudget <- replicateM(mkReg(0));
+    Vector#(2,FIFO#(Bit#(1))) scatter_cycleQ<- replicateM(mkSizedFIFO(17));
     Vector#(2,Reg#(Bit#(8))) pipeShifter_off <- replicateM(mkReg(0));
     Reg#(Bit#(32)) inputCnt <- mkReg(0);
     Reg#(Bit#(16)) chunkAmount <- mkReg(0);
@@ -448,33 +447,39 @@ module mkZfpCompress (ZfpCompressIfc);
         toOut_Group_1_amount[cycle].enq(amount);
         toOut_Group_1_d[cycle].enq(d);
 
+        if (bud != 0) begin
+            scatter_cycleQ[0].enq(cycle);
+        end
+        if (bud > 4) begin
+            scatter_cycleQ[1].enq(cycle);
+        end
+
         scatter_c_1 <= scatter_c_1 + 1;
     endrule
 
     rule scatter_group_2;
         scatter_Group_2_d.deq;
         scatter_Group_2_a.deq;
+        scatter_cycleQ[0].deq;
         Bit#(80) d = scatter_Group_2_d.first;
         Bit#(7) amount = scatter_Group_2_a.first;
-        Bit#(1) cycle = scatter_c_2;
+        Bit#(1) cycle = scatter_cycleQ[0].first;
 
         toOut_Group_2_d[cycle].enq(d);
         toOut_Group_2_a[cycle].enq(amount);
 
-        scatter_c_2 <= scatter_c_2 + 1;
     endrule
 
     rule scatter_group_3;
         scatter_Group_3_d.deq;
         scatter_Group_3_a.deq;
+        scatter_cycleQ[1].deq;
         Bit#(80) d = scatter_Group_3_d.first;
         Bit#(7) amount = scatter_Group_3_a.first;
-        Bit#(1) cycle = scatter_c_3;
+        Bit#(1) cycle = scatter_cycleQ[1].first;
 
         toOut_Group_3_d[cycle].enq(d);
         toOut_Group_3_a[cycle].enq(amount);
-
-        scatter_c_3 <= scatter_c_3 + 1;
     endrule
 
     Vector#(2,FIFO#(Bit#(1))) check_merge_last <- replicateM(mkSizedFIFO(15));

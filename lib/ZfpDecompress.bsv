@@ -127,25 +127,22 @@ module mkZfpDecompress (ZfpDecompressIfc);
         Int#(11) exp_max = unpack(e) + 1023;
         Int#(11) margin = signExtend(noiseMargin);
         Bit#(6) budget = truncate(pack(exp_max + margin));
-        $display("budget is %d cnt is %d",budget,temp_cnt);
         temp_cnt <= temp_cnt + 1;
         Bit#(6) bud_num = 0;
         Bool trigger = flushTrigger;
         
+        bud_num = (budget - 1) / 6 + 1;
+
         if (budget == 0) begin
-            encodeBudget <= 0;
-            encodeBudgetQ.enq(0);
-            bud_num = 0;
+            bud_num = 1;
         end else begin
-            bud_num = (budget - 1) / 6 + 1;
-            if (bud_num < 9) begin
-                encodeBudget <= truncate(bud_num);
-                encodeBudgetQ.enq(truncate(bud_num));
-            end else begin
-                encodeBudget <= 8;
-                encodeBudgetQ.enq(8);
-            end
+            if (bud_num  >8) begin
+                bud_num = 8;
+            end 
         end
+
+        encodeBudget <= truncate(bud_num);
+        encodeBudgetQ.enq(truncate(bud_num));
 
         if (chunkAmount > 49152 - 600) begin
             trigger = True;
